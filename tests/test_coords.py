@@ -1,6 +1,5 @@
 import pytest
 import numpy as np
-from unittest.mock import patch, MagicMock
 import sys
 from pathlib import Path
 import pyproj
@@ -457,24 +456,9 @@ class TestFullPreprocessing:
             [564000, 4194000]
         ])
     
-    def test_geographic_coordinates_processing(self, mock_project, valid_geographic_coords):
+    def test_geographic_coordinates_processing(self, valid_geographic_coords):
         """Test processing of geographic coordinates"""
-        # Mock the projection function
-        mock_projected = np.array([
-            [552000, 4182000],
-            [554000, 4184000],
-            [556000, 4186000],
-            [558000, 4188000],
-            [560000, 4190000],
-            [562000, 4192000],
-            [564000, 4194000]
-        ])
-        mock_project.return_value = mock_projected
-        
         result_coords, indices, proj_info = preprocess_coords(valid_geographic_coords)
-        
-        # Check that projection was called
-        mock_project.assert_called_once()
         
         # Check return values
         assert len(result_coords) == 7
@@ -494,20 +478,10 @@ class TestFullPreprocessing:
         assert proj_info['scale'] == 'unknown'
         assert proj_info['system'] == 'User-provided projection'
     
-    def test_coordinates_with_duplicates(self, mock_project):
-        """Test processing coordinates with duplicates"""
+    def test_coordinates_with_duplicates(self):
+        """Test processing coordinates with duplicates using already-projected coords"""
+        # Use already-projected coordinates to avoid mocking
         coords = np.array([
-            [-122.4, 37.7],
-            [-122.3, 37.8],
-            [-122.4, 37.7],  # Duplicate
-            [-122.5, 37.6],
-            [-122.2, 37.9],
-            [-122.6, 37.5],
-            [-122.1, 37.7],
-            [-122.7, 37.8]
-        ])
-        
-        mock_project.return_value = np.array([
             [552000, 4182000],
             [554000, 4184000],
             [552000, 4182000],  # Duplicate
@@ -525,24 +499,106 @@ class TestFullPreprocessing:
         assert len(indices) == 7
         # Index 2 (duplicate) should not be in kept indices
         assert 2 not in indices
+    
+    def test_remove_duplicates_false(self):
+        """Test processing with remove_duplicates=False keeps all points"""
+        # Use already-projected coordinates
+        coords = np.array([
+            [552000, 4182000],
+            [554000, 4184000],
+            [552000, 4182000],  # Duplicate
+            [556000, 4186000],
+            [558000, 4188000],
+            [560000, 4190000],
+            [562000, 4192000],
+            [564000, 4194000]
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords, remove_duplicates=False)
+        
+        # Should keep all 8 coordinates
+        assert len(result_coords) == 8
+        assert len(indices) == 8
+        np.testing.assert_array_equal(indices, np.arange(8))
+        
+        # Should have close_points info in projection_info
+        assert 'close_points' in proj_info
+        assert len(proj_info['close_points']) == 1
+        
+        # Check the close point pair
+        close_point = proj_info['close_points'][0]
+        assert close_point['indices'] == (0, 2)
+        assert close_point['distance'] < 1e-6
+    
+    def test_remove_duplicates_false_with_near_points(self):
+        """Test processing with remove_duplicates=False identifies near points"""
+        # Create projected coordinates with small differences
+        coords = np.array([
+            [552000.0, 4182000.0],
+            [552000.0005, 4182000.0005],  # Very close but not identical
+            [554000, 4184000],
+            [556000, 4186000],
+            [558000, 4188000],
+            [560000, 4190000],
+            [562000, 4192000],
+            [564000, 4194000]
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(
+            coords, 
+            tolerance=0.001,  # 1mm tolerance
+            remove_duplicates=False
+        )
+        
+        # Should keep all 8 coordinates
+        assert len(result_coords) == 8
+        assert len(indices) == 8
+        
+        # Should identify the close points
+        assert 'close_points' in proj_info
+        assert len(proj_info['close_points']) == 1
+        
+        close_point = proj_info['close_points'][0]
+        assert close_point['indices'] == (0, 1)
+        # Distance should be approximately 0.0007 (sqrt(0.0005^2 + 0.0005^2))
+        assert 0.0006 < close_point['distance'] < 0.0008
+    
+    def test_remove_duplicates_true_default_behavior(self):
+        """Test that remove_duplicates=True is the default"""
+        # Use already-projected coordinates
+        coords = np.array([
+            [552000, 4182000],
+            [554000, 4184000],
+            [552000, 4182000],  # Duplicate
+            [556000, 4186000],
+            [558000, 4188000],
+            [560000, 4190000],
+            [562000, 4192000],
+            [564000, 4194000]
+        ])
+        
+        # Test without specifying remove_duplicates (should default to True)
+        result_coords_default, indices_default, proj_info_default = preprocess_coords(coords)
+        
+        # Test with explicit remove_duplicates=True
+        result_coords_explicit, indices_explicit, proj_info_explicit = preprocess_coords(
+            coords, remove_duplicates=True
+        )
+        
+        # Both should have same behavior
+        np.testing.assert_array_equal(result_coords_default, result_coords_explicit)
+        np.testing.assert_array_equal(indices_default, indices_explicit)
+        assert len(result_coords_default) == 7
+        assert 2 not in indices_default
 
 
 class TestReturnValueStructure:
     """Test the structure and content of return values"""
     
-    def test_projection_info_structure(self, mock_project):
+    def test_projection_info_structure(self):
         """Test that projection_info contains all required keys"""
+        # Use already-projected coordinates
         coords = np.array([
-            [-122.4, 37.7],
-            [-122.3, 37.8],
-            [-122.5, 37.6],
-            [-122.2, 37.9],
-            [-122.6, 37.5],
-            [-122.1, 37.7],
-            [-122.7, 37.8]
-        ])
-        
-        mock_project.return_value = np.array([
             [552000, 4182000],
             [554000, 4184000],
             [556000, 4186000],

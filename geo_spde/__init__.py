@@ -7,17 +7,16 @@ __author__ = "Mitzi Morris"
 
 # Main public API
 from .coords import preprocess_coords
-# from .mesh import create_mesh, compute_fem_matrices
+from .mesh import SPDEMesh
 # from .matrices import compute_projector_matrix, construct_precision_matrix
 from .exceptions import GeoSpdeError, CoordsError, MeshError
 
 __all__ = [
     'preprocess_coords',
-    # 'create_mesh', 
-    # 'compute_fem_matrices',
+    'SPDEMesh',
     # 'compute_projector_matrix',
     # 'construct_precision_matrix',
-    # 'GeoSpdeError',
+    'GeoSpdeError',
     'CoordsError', 
-    # 'MeshError'
+    'MeshError'
 ]

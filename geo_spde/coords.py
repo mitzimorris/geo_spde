@@ -3,7 +3,7 @@ import pyproj
 from scipy.spatial.distance import pdist, squareform
 from scipy.spatial import ConvexHull
 from geo_spde.exceptions import CoordsError
-from typing import Tuple, Dict, Union
+from typing import Tuple, Dict, Union, List
 
 
 def is_geographic(coords: np.ndarray) -> bool:
@@ -303,7 +303,7 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
     
     return unique_coords, unique_indices, n_duplicates
 
-def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tuple[np.ndarray, np.ndarray, Dict]:
+def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6, remove_duplicates: bool = True) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Validate, project, and clean coordinates for SPDE spatial modeling.
     
@@ -314,13 +314,16 @@ def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tuple[np.n
         Can be lon/lat (auto-detected) or already projected
     tolerance : float
         Tolerance for duplicate detection (default: 1e-6)
+    remove_duplicates : bool
+        If True, remove duplicate coordinates. If False, keep all coordinates
+        but report close points (default: True)
         
     Returns:
     --------
     projected_coords : np.ndarray
         Clean projected coordinates
     kept_indices : np.ndarray
-        Indices of non-duplicate points from original array
+        Indices of non-duplicate points from original array (all indices if remove_duplicates=False)
     projection_info : Dict
         Dictionary containing:
         - 'proj4_string': Proj4 projection string
@@ -329,6 +332,7 @@ def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tuple[np.n
         - 'projected_bbox': (x_min, y_min, x_max, y_max) in projected coords
         - 'hull_diameter_km': Approximate diameter in kilometers
         - 'antimeridian_crossing': Boolean flag
+        - 'close_points': List of close point pairs (if remove_duplicates=False)
         
     Raises:
     -------
@@ -394,12 +398,36 @@ def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tuple[np.n
         proj4_string = "+proj=unknown"
         system_name = "User-provided projection"
     
-    # Remove duplicates in projected space
-    clean_coords, kept_indices, n_duplicates = remove_duplicate_coords(
-        projected_coords, tolerance)
-    
-    if n_duplicates > 0:
-        print(f"Removed {n_duplicates} duplicate coordinates (tolerance={tolerance})")
+    # Handle duplicates based on remove_duplicates flag
+    if remove_duplicates:
+        clean_coords, kept_indices, n_duplicates = remove_duplicate_coords(
+            projected_coords, tolerance)
+        
+        if n_duplicates > 0:
+            print(f"Removed {n_duplicates} duplicate coordinates (tolerance={tolerance})")
+        close_points = []
+    else:
+        # Keep all coordinates but identify close points
+        clean_coords = projected_coords
+        kept_indices = np.arange(len(projected_coords))
+        
+        # Find close points for reporting
+        close_points = []
+        if len(projected_coords) > 1:
+            distances = squareform(pdist(projected_coords))
+            for i in range(len(projected_coords)):
+                for j in range(i + 1, len(projected_coords)):
+                    dist = distances[i, j]
+                    if dist < tolerance:
+                        close_points.append({
+                            'indices': (i, j),
+                            'distance': dist,
+                            'coords': (projected_coords[i], projected_coords[j])
+                        })
+        
+        if close_points:
+            print(f"Warning: Found {len(close_points)} close coordinate pairs (within tolerance={tolerance})")
+            print("  Consider reviewing these points based on your domain knowledge")
     
     # Compute projected bounding box
     x_min, x_max = clean_coords[:, 0].min(), clean_coords[:, 0].max()
@@ -416,7 +444,14 @@ def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tuple[np.n
         'antimeridian_crossing': antimeridian_crossing
     }
     
-    print(f"Coordinate preprocessing complete: {len(coords)} -> {len(clean_coords)} points")
+    # Add close_points info if not removing duplicates
+    if not remove_duplicates and close_points:
+        projection_info['close_points'] = close_points
+    
+    if remove_duplicates:
+        print(f"Coordinate preprocessing complete: {len(coords)} -> {len(clean_coords)} points")
+    else:
+        print(f"Coordinate preprocessing complete: {len(coords)} points retained")
     print(f"Projected extent: {x_max - x_min:.0f} × {y_max - y_min:.0f} meters")
     
     return clean_coords, kept_indices, projection_info
