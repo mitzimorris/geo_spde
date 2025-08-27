@@ -1,0 +1,251 @@
+---
+title: "Scaling up Spatial GPs in Stan"
+author: "Mitzi Morris"
+format:
+  html:
+    theme:
+      light: [cosmo, quarto-config/theme.scss]
+      dark: [cosmo, quarto-config/theme-dark.scss]
+    syntax-definitions:
+      - quarto-config/stan.xml
+    highlight-style:
+      light: quarto-config/tango.theme
+      dark: quarto-config/nord.theme
+    code-copy: true
+    code-overflow: wrap
+    code-fold: true
+    code-summary: "Show Code"
+    toc: true
+    css: quarto-config/quarto_styles.css
+    page-layout: full
+    toc-location: right
+    embed-resources: true
+---
+
+## Models for Geospatial Point Data in Stan
+
+Geolocated data where we expect measurements at nearby locations to be similar to each other,
+but not necessarily similar to distant locations, can be modeled using a Gaussian process model
+which is parameterized by a mean function and covariance function.
+But when the number of observed locations is greater than $1000$ this approach is too computationally expensive for Stan,
+because exact inference requires computing the Cholesky of the covariance matrix which, unfortunately, scales cubicly with the size of the data.
+For a covariance matrix of size $1000$, computing the Cholesky of the covariance matrix requires a billion operations,
+for size $10,000$, a trillion.
+
+For large geospatial datasets the best alternatives are R-INLA or TMB.
+The key insight that allows R-INLA to fit GPs comes from
+[Lindgren, Rue, and Lindström, 2011](https://www.pure.ed.ac.uk/ws/portalfiles/portal/31304917/An_explicit_link_between_Gaussian_fields_and_Gaussian_Markov_random_fields_The_stochastic_partial_differential_equation_approach.pdf) "An Explicit Link between Gaussian Fields and Gaussian Markov Random Fields: The Stochastic Partial Differential Equation Approach", which
+shows how to transform the dense covariance matrix of a continuous Gaussian field
+(a Gaussian process for 2D or 3D spatial data) into a sparse precision matrix representation
+using a Stochastic Partial Differential Equation (SPDE).
+By transforming the Gaussian process into a Gaussian Markov random field (GMRF),
+for 2D coordinates, the computational complexity is reduced from order $O(n^3)$ to order $O(n^{3/2})$,
+and for 3D coordinates it is reduced to order $O(n^2)$,
+thus a GMRF for 2D data requires approximately 30,000 operations for a set of 1000 locations,
+and a million operations for a set of 10,000, which is still costly, but doable.
+This case study shows how we can implement this approach in Stan.
+
+It is important to note that R-INLA is still much faster because
+its implementations are optimized for sparse precision matrices
+while Stan's math library has no such corresponding functions;
+what Stan offers is the ability to develop custom models not available in R-INLA.
+With the SPDE approach, Stan can handle moderately large ($N < 10,000$) datasets.
+
+
+## The SPDE Approach of Lindgren et al, 2011
+
+GFs model continuous data, i.e. a theoretically infinite number of locations,
+and are specified in terms of a dense covariance matrix, $\Sigma$.
+Marginal covariances between locations can be read directly off of $\Sigma$, which in turn,
+is parameterized by a kernel function with hyperparameters $\rho$,
+the length scale which controls the distances over which to operate, and $\alpha$,
+the marginal standard deviation, which controls how much of the variation is explained by the GF.
+
+GMRFs model discrete data, i.e. a finite, indexed set of coordinates,
+where the value of each point is conditionally dependent only on the set of its neighbors
+which are specified in terms of a sparse precision matrix, Q.
+The neighbor relationship can be read directly off of the non-zero elements of Q.
+However, because recovering the corresponding covariance matrix is difficult and computationally challenging,
+it is not easy to recover the marginal covariances, nor is it possible to parameterize the precision matrix
+of a GMRF to achieve predefined behavior in terms of correlation between two sites and to control marginal variances.
+
+The outline of the solution seems straightforward:
+
+> (a) Do the modelling by using a GF on a set of locations {$s_i$}, to construct a discretized GF with covariance matrix $\Sigma$.
+
+> (b) Find a GMRF with local neighborhood and precision matrix Q that represents the GF in the best possible way,
+i.e. $Q^{−1}$ is close to $\Sigma$ in some norm. (We deliberately use the word ‘represents’ instead of approximates.)
+
+> (c) Do the computations using the GMRF representation by using numerical methods for sparse matrices.
+
+
+It relies on two assumptions:
+
+> First the GF must be of such a type that there is a GMRF with local neighborhood that can represent it sufficiently accurately to maintain the interpretation of the parameters and the results.
+
+This is possible for GFs with the Matérn covariance function in $R^d$.
+
+> Secondly, we must be able to compute the GMRF representation from the GF, at any collections of locations, so fast that we still achieve a considerable speed-up compared with treating the GF directly.
+
+This is where the SPDEs come in:
+
+> The GMRF representation can be constructed explicitly by using a certain stochastic partial
+  differential equation (SPDE) which has GFs with Matérn covariance function as the solution when
+  driven by Gaussian white noise.
+
+Here's a conceptual diagram:
+
+```
+        White Noise W(s) → [SPDE equation] → Gaussian Field u(s)
+            (input)           (transform)         (output)
+```
+
+* You put in white noise $W(s)$ (uncorrelated, infinite variance)
+* The differential operator smooths it out
+* You get out $\mathbf{u}(s)$, which is a smooth Gaussian field with exactly the Matérn covariance
+
+
+#### The Stochastic Partial Differential Equation (main result 1)
+
+*Why this matters*:  the Stan model will be specified as a GMRF.
+
+The first result of Lindgren et al 2011 is to show that 
+a GF $x(\mathbf{u})$ with the Matérn covariance is a solution to the linear fractional SPDE
+
+$$(\kappa^2 - \Delta)^{{\alpha}/2}\, \mathbf{u}(s) = W(s), \ \  \mathbf{u} \in \mathbb{R}^d, \ \ \alpha = \nu + d/2, \ \ \kappa > 0, \ \ \nu > 0$$
+
+
+If you understand this already, skip to the next section.  Otherwise, let's persevere.
+In order to avoid getting bogged down in the math, remember the main goal - the computational model
+requires a sparse precision matrix and should provide parameters for
+both the marginal variance (smoothness) and amount of correlation between two sites at a specified distance (range).
+
+* $W(s)$ = White noise </br>
+This is the random "input" or "forcing". It's Gaussian with infinite variance at each point.
+
+* $(\kappa^2 - \Delta)^{{\alpha}/2}$ = The differential operator </br>
+This determines how the white noise gets "smoothed" into the field, which controls the covariance structure of the resulting field
+
+* $\kappa > 0$  controls the spatial range, i.e., this is the range parameter in the Matérn.
+
+* $\Delta$ - The Laplacian operator which measures the curvature of the field at each point.
+It is the sum of second partial derivatives.  In 2D:
+$${\Delta}_2 u = \frac{\partial^2 u}{\partial x^2} + \frac{\partial^2 u}{\partial y^2}$$
+
+* $(\kappa^2 - \Delta)$ balances between the field magnitude and its smoothness
+
+* $\alpha/2$ - the fractional power.
+$\alpha = \nu + d/2$ connects the SPDE order to Matérn smoothness ν.
+In 2D, $\alpha = \nu + 1$.  When $\nu = 1$, $\alpha/2 = 1$, which is exponential covariance (rough, non-differentiable fields),
+when $\alpha/2 = 2$, this provides smoother Matérn fields (once differentiable),
+and when $\alpha/2 = 3$, this provides very smooth Matérn fields (twice differentiable),
+
+* $\mathbf{u}(s)$ - this is the Gaussian field we solve for.
+The covariance between $u(s_1)$ and $u(s_2)$ turns out to be exactly the Matérn covariance.
+
+Thus we see that the SPDE does provide the equivalent of the Matérn smoothness and range parameters.
+
+
+#### How to Construct the Precision Matrix of the GMRF (main result 2)
+
+*Why this matters*  The structure of the sparse precision matrix of the GMRF
+is derived from the geolocated coordinates of all locations in the observational data.
+Thus, once constructed, it comes into the model as data.
+In this section, we walk through the solution presented in the paper.
+Understanding this is strictly optional, as both R-INLA and Python have
+methods to do this for you.
+
+The SPDE allows for a translation from GF to GMRF, but the question remains:  how to construct the GMRF precision matrix Q?
+In the follow-on paper, [Lindgren, Bolin, and Rue 2022](https://doi.org/10.1016/j.spasta.2022.100599)
+"The SPDE approach for Gaussian and non-Gaussian fields: 10 years and still running", they write:
+
+> The initial motivation by Lindgren et al. (2011) was to address the long-standing problem of how
+  to construct precision matrices for Gaussian Markov random fields (GMRFs) such that the resulting
+  models would be invariant to the geometry of the spatial neighbor defining graph. The key to the
+  solution was to construct a finite dimensional Hilbert space of function representations, and
+  project the continuous domain functions onto this space. By choosing the finite dimensional space
+  to be spanned by local piecewise linear basis functions, projections of Matérn fields with Markov
+  properties on the continuous domain then lead to Markov properties for the basis function weights.
+
+This statement is way beyond my mathematical skillset, so I asked Claude.ai to explain the meaning of
+*"to construct precision matrices ... such that the resulting models would be invariant to the geometry of the spatial neighbor defining graph"*.
+The following is an edited version of that conversation.
+
+Unpacking: *"invariant to the geometry of the spatial neighbor defining graph"*
+
+The problem:  Traditional GMRFs define correlations based on a graph (mesh/grid)
+If you use a rectangular grid vs triangular mesh, you get different models, but
+the statistical properties shouldn't depend on your arbitrary choice of mesh.
+
+The solution: *"construct a finite dimensional Hilbert space of function representations 
+and project the continuous domain functions onto this Hilbert space"*.
+
+* *"Construct a finite dimensional Hilbert space"*
+  + Instead of working on an infinite continuous domain, create a finite space spanned by basis functions,
+    such as using polynomials up to degree $n$ or piecewise linear functions on triangles. (Following INLA, we use a triangles to create a mesh).
+  
+* *"Function representations"*
+  + Use basis functions like $\psi_1(s), \psi_2(s), \ldots, \psi_n(s)$
+  + Any function can be written as: $u(s) = \sum_{i=1}^n u_i\psi_i(s)$
+  + The ${u_i}$ are the coefficients (finite dimensional representation)
+
+* *"Project continuous domain functions onto this space"*
+  + Take the continuous SPDE: $(\kappa^2 - \Delta)^{{\alpha}/2}\, \mathbf{u}(s) = W(s)$
+  + Express $\mathbf{u}(s)$ in the basis: $u(s) = \sum_{i=1}^n u_i\psi_i(s)$
+  + Project the equation onto each basis function
+  + Get a finite system of equations for the coefficients $u_i$.
+
+Using finite element methods (FEMs) to solve this system of equations results in a sparse matrix $\mathbf{K}$,
+the discretized version of the differential operator $(\kappa^2 - \Delta)$, which has the structure:
+
+$$\mathbf{K} = \kappa^2 \, \mathbf{C} + \mathbf{G}$$
+
+where: 
+
+ * $\kappa^2$ is the range parameter from the Matérn covariance
+ * $\mathbf{C}$ is the mass matrix (diagonal-ish, represents $\kappa^2$)
+ * $\mathbf{G}$ is the stiffness matrix (represents $-\Delta$, connects neighbors)
+
+The precision matrix Q of the GMRF representation depends on $\alpha$:
+
+* When $\alpha = 1$ (SPDE variable $\nu = 0$ in 2D): $\mathbf{Q} = \mathbf{K}$ directly.
+* When $\alpha = 2$ (SPDE variable $\nu = 1$ in 2D): $\mathbf{Q}_2 = \mathbf{K}^T \mathbf{C}^{-1} \mathbf{K}$.
+* When $\alpha = 3$: $\mathbf{Q}_3 = \mathbf{K}^T \mathbf{C}^{-1} \mathbf{Q}_1 \mathbf{C}^{-1} \mathbf{K} = \mathbf{K}^T \mathbf{C}^{-1} \mathbf{K} \mathbf{C}^{-1} \mathbf{K}$.
+* When $\alpha = 4$: $\mathbf{Q}_4 = \mathbf{K}^T \mathbf{C}^{-1} \mathbf{Q}_2 \mathbf{C}^{-1} \mathbf{K} = \mathbf{K}^T \mathbf{C}^{-1} \mathbf{K}^T \mathbf{C}^{-1} \mathbf{K} \mathbf{C}^{-1} \mathbf{K}$.
+* The general recursive formula is: $\mathbf{Q}_{\alpha} = \mathbf{K}^T \mathbf{C}^{-1} \mathbf{Q}_{\alpha-2} \mathbf{C}^{-1} \mathbf{K}$ for $\alpha = 3, 4, 5, \ldots$, so you're essentially "wrapping" the $\mathbf{Q}_{\alpha-2}$ matrix with $\mathbf{K}^T \mathbf{C}^{-1}$ on the left and $\mathbf{C}^{-1} \mathbf{K}$ on the right. This builds up the precision matrix by recursively applying the differential operator. In practice with the lumped mass approximation where $\mathbf{C}$ is replaced by diagonal $\tilde{\mathbf{C}}$, this becomes computationally tractable while maintaining sparsity.
+
+The key computational challenge is that ${\mathbf{C}}^{-1}$ is dense, which would make $\mathbf{Q}$ dense.
+This is where the critical approximation comes in:
+*we replace* $\mathbf{C}$ *with a lumped (diagonal) mass matrix* $\mathbf{\tilde{C}}$,
+*where* $\mathbf{\tilde{C}}_{ii} = \langle\psi_i, 1\rangle$ *(the integral of basis function i over its support)*.
+With this approximation:
+
+- When $\alpha = 2$: $\mathbf{Q} \approx {\mathbf{K}}^T {\mathbf{\tilde{C}}}^{-1}\, \mathbf{K}$.
+- Since $\mathbf{\tilde{C}}$ is diagonal, ${\mathbf{\tilde{C}}}^{-1}$ is also diagonal and sparse.
+- Therefore ${\mathbf{K}}^T \mathbf{\tilde{C}}^{-1}\, \mathbf{K}$ remains sparse.
+
+The further simplification $\mathbf{Q} \approx {\mathbf{K}}^T \mathbf{K}$
+occurs when we approximate $\mathbf{\tilde{C}} \approx \mathbf{I}$ (identity matrix),
+which is reasonable when the mesh is relatively uniform.
+
+This method of construction is crucial because:
+
+- It preserves sparsity of the precision matrix.
+- The approximation error is typically small compared to other sources of uncertainty.
+- It enables the use of sparse matrix algorithms with O(n^(3/2)) complexity in 2D.
+
+
+## Implementing the SPDE Approach in Stan
+
+
+
+## References
+
+
+
+
+
+
+
+
+
