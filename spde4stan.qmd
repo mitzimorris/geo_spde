@@ -24,31 +24,31 @@ format:
 
 ## Models for Geospatial Point Data in Stan
 
-Geolocated data where we expect measurements at nearby locations to be similar to each other,
-but not necessarily similar to distant locations, can be modeled using a Gaussian process model
-which is parameterized by a mean function and covariance function.
-But when the number of observed locations is greater than $1000$ this approach is too computationally expensive for Stan,
+Here's the problem: your data consists of a set noisy measurements from distinct locations with 2D or 3D geo-coordinates,
+and you want to do some local smoothing of the data.
+The most straightforward way to model this is to use a Gaussian process (GP) model
+parameterized by a mean function and a covariance function.
+But when the number of observed locations is greater than $1000$, using a GP model is beyond the current capacity of Stan's NUTS-HMC sampler,
 because exact inference requires computing the Cholesky of the covariance matrix which, unfortunately, scales cubicly with the size of the data.
 For a covariance matrix of size $1000$, computing the Cholesky of the covariance matrix requires a billion operations,
 for size $10,000$, a trillion.
 
-For large geospatial datasets the best alternatives are R-INLA or TMB.
-The key insight that allows R-INLA to fit GPs comes from
+Here's the solution: transform the Gaussian process into an equivalent Gaussian Markov random field (GMRF),
+following the R-INLA approach, based on
 [Lindgren, Rue, and Lindström, 2011](https://www.pure.ed.ac.uk/ws/portalfiles/portal/31304917/An_explicit_link_between_Gaussian_fields_and_Gaussian_Markov_random_fields_The_stochastic_partial_differential_equation_approach.pdf) "An Explicit Link between Gaussian Fields and Gaussian Markov Random Fields: The Stochastic Partial Differential Equation Approach", which
 shows how to transform the dense covariance matrix of a continuous Gaussian field
 (a Gaussian process for 2D or 3D spatial data) into a sparse precision matrix representation
 using a Stochastic Partial Differential Equation (SPDE).
-By transforming the Gaussian process into a Gaussian Markov random field (GMRF),
-for 2D coordinates, the computational complexity is reduced from order $O(n^3)$ to order $O(n^{3/2})$,
-and for 3D coordinates it is reduced to order $O(n^2)$,
-thus a GMRF for 2D data requires approximately 30,000 operations for a set of 1000 locations,
+For 2D coordinates, the computational complexity is reduced from order $O(n^3)$ to order $O(n^{3/2})$
+and for 3D coordinates it is reduced to order $O(n^2)$.
+Thus a GMRF for 2D data requires approximately 30,000 operations for a set of 1000 locations,
 and a million operations for a set of 10,000, which is still costly, but doable.
 This case study shows how we can implement this approach in Stan.
 
-It is important to note that R-INLA is still much faster because
-its implementations are optimized for sparse precision matrices
-while Stan's math library has no such corresponding functions;
-what Stan offers is the ability to develop custom models not available in R-INLA.
+For very large geospatial datasets it is still advisable to use either R-INLA or TMB.
+Futhermore, R-INLA will be much faster than Stan its implementations are optimized for sparse precision matrices
+while Stan's math library has no such corresponding functions.
+What Stan offers is the ability to develop custom models not available in R-INLA.
 With the SPDE approach, Stan can handle moderately large ($N < 10,000$) datasets.
 
 
@@ -232,12 +232,40 @@ This method of construction is crucial because:
 
 - It preserves sparsity of the precision matrix.
 - The approximation error is typically small compared to other sources of uncertainty.
-- It enables the use of sparse matrix algorithms with O(n^(3/2)) complexity in 2D.
 
 
 ## Implementing the SPDE Approach in Stan
 
+The key relationship in the SPDE is:
 
+$(\kappa^2 - \Delta)^{{\alpha}/2}\, \mathbf{u}(s) = W(s)$
+
+For the simplest case where $\alpha = 2$, (so $\nu$ = 1 in 2D), the discrete form is:
+
+$\mathbf{K}\mathbf{u} = \boldsymbol{\varepsilon}$ where $\boldsymbol{\varepsilon} \sim N(0, \mathbf{I})$
+
+Therefore
+
+$u \sim \mathbf{N}(0, \mathbf{K}^{-1})$
+
+
+* $\mathbf{u} \sim N(0, \mathbf{K}^{-1}\boldsymbol{\Sigma}_\varepsilon(\mathbf{K}^{-1})^T)$
+* The **precision matrix** is: $\mathbf{Q} = \mathbf{K}^T\boldsymbol{\Sigma}_\varepsilon^{-1}\mathbf{K}$
+* The **covariance matrix** is: $\boldsymbol{\Sigma} = \mathbf{Q}^{-1} = (\mathbf{K}^T\boldsymbol{\Sigma}_\varepsilon^{-1}\mathbf{K})^{-1}$
+
+
+
+
+The Key Stan Features for SPDE
+
+* Direct Precision Matrix Support - Stan's multi_normal_prec works directly with precision matrices.
+* Sparse Matrix Operations - Stan has CSR (Compressed Sparse Row) format support.
+
+* Incremental Log Probability -  Instead of using built-in distributions, you can increment the target:
+```
+target += -0.5 * dot_product(u, csr_matrix_vector_multiply(n, n, Q_w, Q_v, Q_u, u));
+target += 0.5 * n * log(tau);  // normalization
+```
 
 ## References
 
