@@ -53,18 +53,6 @@ class TestGeographicDetection:
         ])
         assert is_geographic(coords) == True
     
-    def test_edge_case_projected_in_geographic_range(self):
-        """Test projected coords that happen to fall in geographic range"""
-        # Simulating projected coordinates with large variance
-        coords = np.array([
-            [50, 30],
-            [150, 80],
-            [-100, -50],
-            [170, 85]
-        ])
-        # This should be detected as projected due to large variance
-        assert is_geographic(coords) == False
-    
     def test_coordinates_outside_geographic_bounds(self):
         """Test coordinates clearly outside lon/lat bounds"""
         coords = np.array([
@@ -614,8 +602,7 @@ class TestReturnValueStructure:
         required_keys = {
             'proj4_string', 'system', 'scale', 'projected_bbox', 
             'hull_diameter_km', 'antimeridian_crossing',
-            'scale_estimates', 'transform_info', 'normalized', 
-            'coordinate_units'
+            'scale_estimates', 'coordinate_units'
         }
         assert set(proj_info.keys()) == required_keys
         

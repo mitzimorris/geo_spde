@@ -13,59 +13,28 @@ def estimate_characteristic_scale(coords: np.ndarray, method: str = 'mst') -> Di
     """
     Estimate characteristic spatial scale from point pattern.
     
-    Parameters
-    ----------
-    coords : np.ndarray
-        Coordinate array (n_obs, 2)
-    method : str
-        'mst' for minimum spanning tree (fast)
-        'nn' for nearest neighbor distances
-        
-    Returns
-    -------
-    Dict with scale estimates:
-        - characteristic_scale: Typical correlation scale
-        - min_distance: Minimum non-zero distance
-        - median_distance: Median of all distances
-        - mesh_recommended_edge: Suggested mesh edge length
+    @param coords: Coordinate array (n_obs, 2)
+    @param method: 'mst' for minimum spanning tree (fast), 'nn' for nearest neighbor distances
+    @returns: Dict with scale estimates: characteristic_scale, min_distance, median_distance, mesh_recommended_edge
     """
     n_obs = len(coords)
-    
-    # Basic distance statistics
-    if n_obs < 500:
-        dists = distance_matrix(coords, coords)
-        dists_flat = dists[np.triu_indices(n_obs, k=1)]
-    else:
-        # Subsample for efficiency
-        idx = np.random.choice(n_obs, 500, replace=False)
-        dists = distance_matrix(coords[idx], coords[idx])
-        dists_flat = dists[np.triu_indices(len(idx), k=1)]
-    
+    dists = distance_matrix(coords, coords)
+    dists_flat = dists[np.triu_indices(n_obs, k=1)]
     min_dist = np.min(dists_flat[dists_flat > 0]) if np.any(dists_flat > 0) else 1.0
     median_dist = np.median(dists_flat)
     
     if method == 'mst':
-        # Use MST to estimate connectivity scale
-        if n_obs > 1000:
-            idx = np.random.choice(n_obs, 1000, replace=False)
-            coords_sub = coords[idx]
-        else:
-            coords_sub = coords
-        
+        coords_sub = coords
         dist_matrix = distance_matrix(coords_sub, coords_sub)
         mst = minimum_spanning_tree(dist_matrix)
         mst_edges = mst.tocoo().data
-        
-        # Use 75th percentile of MST edges
         characteristic_scale = np.percentile(mst_edges, 75)
     else:  # nearest neighbor
-        # Find nearest neighbor for each point
         nn_distances = []
         for i in range(min(n_obs, 500)):
             dists_i = dists[i] if n_obs < 500 else distance_matrix(coords[i:i+1], coords)[0]
             dists_i[i] = np.inf  # Exclude self
             nn_distances.append(np.min(dists_i))
-        
         characteristic_scale = np.median(nn_distances) * 5  # Scale up from NN
     
     return {
@@ -76,109 +45,24 @@ def estimate_characteristic_scale(coords: np.ndarray, method: str = 'mst') -> Di
     }
 
 
-def normalize_coordinates(coords: np.ndarray, 
-                         method: str = 'unit_square') -> Tuple[np.ndarray, Dict]:
-    """
-    Normalize coordinates for numerical stability.
-    
-    Parameters
-    ----------
-    coords : np.ndarray
-        Coordinates to normalize
-    method : str
-        'unit_square': Scale to [0, 1]²
-        'standardize': Zero mean, unit variance
-        'preserve_aspect': Scale to [-1, 1]² preserving aspect ratio
-        
-    Returns
-    -------
-    coords_norm : np.ndarray
-        Normalized coordinates
-    transform_info : Dict
-        Information to reverse transformation
-    """
-    min_coords = coords.min(axis=0)
-    max_coords = coords.max(axis=0)
-    coord_range = max_coords - min_coords
-    
-    # Avoid division by zero
-    coord_range[coord_range < 1e-10] = 1.0
-    
-    if method == 'unit_square':
-        coords_norm = (coords - min_coords) / coord_range
-        transform_info = {
-            'method': 'unit_square',
-            'min_coords': min_coords,
-            'max_coords': max_coords,
-            'scale_factors': 1.0 / coord_range
-        }
-    elif method == 'standardize':
-        mean_coords = coords.mean(axis=0)
-        std_coords = coords.std(axis=0)
-        std_coords[std_coords < 1e-10] = 1.0
-        coords_norm = (coords - mean_coords) / std_coords
-        transform_info = {
-            'method': 'standardize',
-            'mean_coords': mean_coords,
-            'std_coords': std_coords,
-            'scale_factors': 1.0 / std_coords
-        }
-    else:  # preserve_aspect
-        max_range = coord_range.max()
-        coords_norm = 2 * (coords - min_coords) / max_range - 1
-        center_offset = (2 - coord_range / max_range) / 2
-        coords_norm[:, 0] += center_offset[0]
-        coords_norm[:, 1] += center_offset[1]
-        transform_info = {
-            'method': 'preserve_aspect',
-            'min_coords': min_coords,
-            'max_range': max_range,
-            'scale_factors': np.array([2.0 / max_range, 2.0 / max_range])
-        }
-    
-    return coords_norm, transform_info
-
 def is_geographic(coords: np.ndarray) -> bool:
     """
-    Detect if coordinates are in lon/lat format using value range heuristics.
+    Detect if coordinates are in lon/lat format using value range.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Coordinate array of shape (n_obs, 2)
-        
-    Returns:
-    --------
-    bool : True if coordinates appear to be geographic (lon/lat)
+    @param coords: Coordinate array of shape (n_obs, 2)
+    @returns: True if coordinates appear to be geographic (lon/lat)
     """
     x_vals, y_vals = coords[:, 0], coords[:, 1]
-    
-    # Check if all values fall within geographic ranges
     lon_range = np.all((-180 <= x_vals) & (x_vals <= 180))
     lat_range = np.all((-90 <= y_vals) & (y_vals <= 90))
-    
-    # Additional heuristic: geographic coords typically have smaller variance
-    # and more decimal precision
-    if lon_range and lat_range:
-        x_var = np.var(x_vals)
-        y_var = np.var(y_vals)
-        # If variance is very large (>10000), likely projected despite being in range
-        return x_var < 10000 and y_var < 10000
-    
-    return False
+    return lon_range and lat_range
 
 def detect_antimeridian_crossing(coords: np.ndarray) -> bool:
     """
     Detect if longitude data crosses the ±180° antimeridian.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Geographic coordinates (lon/lat)
-        
-    Returns:
-    --------
-    bool : True if antimeridian crossing detected
+    @param coords: Geographic coordinates (lon/lat)
+    @returns: True if antimeridian crossing detected
     """
     lon_range = coords[:, 0].max() - coords[:, 0].min()
     return lon_range > 180
@@ -187,17 +71,10 @@ def unwrap_antimeridian(coords: np.ndarray) -> np.ndarray:
     """
     Unwrap coordinates that cross the antimeridian by shifting to 0-360° system.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Geographic coordinates with antimeridian crossing
-        
-    Returns:
-    --------
-    np.ndarray : Unwrapped coordinates
+    @param coords: Geographic coordinates with antimeridian crossing
+    @returns: Unwrapped coordinates
     """
     coords_unwrapped = coords.copy()
-    # Convert negative longitudes to 0-360° system
     coords_unwrapped[:, 0] = np.where(coords[:, 0] < 0, 
                                       coords[:, 0] + 360, 
                                       coords[:, 0])
@@ -207,17 +84,10 @@ def compute_convex_hull_diameter(coords: np.ndarray) -> float:
     """
     Compute maximum distance between convex hull vertices.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Coordinate array of shape (n_obs, 2)
-        
-    Returns:
-    --------
-    float : Maximum distance between hull vertices
+    @param coords: Coordinate array of shape (n_obs, 2)
+    @returns: Maximum distance between hull vertices
     """
     if len(coords) < 3:
-        # For < 3 points, return maximum pairwise distance
         if len(coords) == 2:
             return np.linalg.norm(coords[1] - coords[0])
         return 0.0
@@ -238,16 +108,9 @@ def degrees_to_km_estimate(coords: np.ndarray, hull_diameter_deg: float) -> floa
     """
     Convert geographic diameter to approximate km using latitude correction.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Geographic coordinates (lon/lat)
-    hull_diameter_deg : float
-        Diameter in degrees
-        
-    Returns:
-    --------
-    float : Approximate diameter in kilometers
+    @param coords: Geographic coordinates (lon/lat)
+    @param hull_diameter_deg: Diameter in degrees
+    @returns: Approximate diameter in kilometers
     """
     center_lat = np.mean(coords[:, 1])
     
@@ -263,16 +126,9 @@ def determine_projection_scale(coords: np.ndarray, hull_diameter_deg: float) -> 
     """
     Determine appropriate projection scale based on spatial extent.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Geographic coordinates
-    hull_diameter_deg : float
-        Convex hull diameter in degrees
-        
-    Returns:
-    --------
-    str : 'single_region', 'multi_region', or 'global'
+    @param coords: Geographic coordinates
+    @param hull_diameter_deg: Convex hull diameter in degrees
+    @returns: 'single_region', 'multi_region', or 'global'
     """
     approx_km = degrees_to_km_estimate(coords, hull_diameter_deg)
     if approx_km < 1000:
@@ -285,14 +141,8 @@ def determine_utm_zone(coords: np.ndarray) -> Tuple[int, str]:
     """
     Determine optimal UTM zone from coordinate centroid.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Geographic coordinates (lon/lat)
-        
-    Returns:
-    --------
-    Tuple[int, str] : (zone_number, hemisphere)
+    @param coords: Geographic coordinates (lon/lat)
+    @returns: Tuple of (zone_number, hemisphere)
     """
     centroid_lon = np.mean(coords[:, 0])
     centroid_lat = np.mean(coords[:, 1])
@@ -311,39 +161,22 @@ def compute_albers_standard_parallels(lat_min: float, lat_max: float) -> Tuple[f
     """
     Compute optimal standard parallels for Albers Equal-Area projection.
     
-    Parameters:
-    -----------
-    lat_min : float
-        Minimum latitude
-    lat_max : float
-        Maximum latitude
-        
-    Returns:
-    --------
-    Tuple[float, float] : (parallel_1, parallel_2)
+    @param lat_min: Minimum latitude
+    @param lat_max: Maximum latitude
+    @returns: Tuple of (parallel_1, parallel_2)
     """
     lat_range = lat_max - lat_min
-    
-    # Standard approach: 1/6 from each end
     parallel_1 = lat_min + lat_range / 6
     parallel_2 = lat_max - lat_range / 6
-    
     return parallel_1, parallel_2
 
 def create_projection_string(scale: str, coords: np.ndarray) -> str:
     """
     Create appropriate Proj4 projection string based on scale and coordinates.
     
-    Parameters:
-    -----------
-    scale : str
-        Projection scale ('single_region', 'multi_region', 'global')
-    coords : np.ndarray
-        Geographic coordinates (lon/lat)
-        
-    Returns:
-    --------
-    str : Proj4 projection string
+    @param scale: Projection scale ('single_region', 'multi_region', 'global')
+    @param coords: Geographic coordinates (lon/lat)
+    @returns: Proj4 projection string
     """
     if scale == 'single_region':
         # UTM projection
@@ -377,16 +210,9 @@ def project_coordinates(coords: np.ndarray, proj4_string: str) -> np.ndarray:
     """
     Project geographic coordinates using specified projection.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Geographic coordinates (lon/lat)
-    proj4_string : str
-        Proj4 projection string
-        
-    Returns:
-    --------
-    np.ndarray : Projected coordinates
+    @param coords: Geographic coordinates (lon/lat)
+    @param proj4_string: Proj4 projection string
+    @returns: Projected coordinates
     """
     # Create transformer from WGS84 to target projection
     transformer = pyproj.Transformer.from_crs("EPSG:4326", proj4_string, always_xy=True)
@@ -400,16 +226,9 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
     """
     Remove duplicate coordinates within tolerance.
     
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Coordinate array of shape (n_obs, 2)
-    tolerance : float
-        Distance tolerance for considering points duplicates
-        
-    Returns:
-    --------
-    Tuple[np.ndarray, np.ndarray, int] : (unique_coords, unique_indices, n_duplicates)
+    @param coords: Coordinate array of shape (n_obs, 2)
+    @param tolerance: Distance tolerance for considering points duplicates
+    @returns: Tuple of (unique_coords, unique_indices, n_duplicates)
     """
     if len(coords) <= 1:
         return coords, np.arange(len(coords)), 0
@@ -437,12 +256,15 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
 
 def preprocess_coords(coords: np.ndarray, 
                      tolerance: float = 1e-6, 
-                     remove_duplicates: bool = True,
-                     normalize: bool = False,
-                     normalize_method: str = 'unit_square') -> Tuple[np.ndarray, np.ndarray, Dict]:
+                     remove_duplicates: bool = True) -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Validate, project, and clean coordinates for SPDE spatial modeling.
-
+    
+    @param coords: Input coordinates of shape (n_obs, 2), can be lon/lat (auto-detected) or already projected
+    @param tolerance: Tolerance for duplicate detection (default: 1e-6)
+    @param remove_duplicates: If True, remove duplicate coordinates; if False, keep all but report close points
+    @returns: Tuple of (projected_coords, kept_indices, projection_info dict)
+    @raises CoordsError: If input validation fails
     """
     
     # Input validation
@@ -535,21 +357,11 @@ def preprocess_coords(coords: np.ndarray,
             print(f"Warning: Found {len(close_points)} close coordinate pairs (within tolerance={tolerance})")
             print("  Consider reviewing these points based on your domain knowledge")
     
-    # NOW we have clean_coords defined, so we can estimate scales
     scale_estimates = estimate_characteristic_scale(clean_coords)
-    
-    # Normalize if requested
-    transform_info = None
-    if normalize:
-        clean_coords, transform_info = normalize_coordinates(clean_coords, normalize_method)
-        print(f"Coordinates normalized using {normalize_method} method")
-    
-    # Compute projected bounding box (after potential normalization)
     x_min, x_max = clean_coords[:, 0].min(), clean_coords[:, 0].max()
     y_min, y_max = clean_coords[:, 1].min(), clean_coords[:, 1].max()
     projected_bbox = (x_min, y_min, x_max, y_max)
     
-    # Create extended projection info dictionary
     projection_info = {
         'proj4_string': proj4_string,
         'system': system_name,
@@ -558,30 +370,18 @@ def preprocess_coords(coords: np.ndarray,
         'hull_diameter_km': hull_diameter_km,
         'antimeridian_crossing': antimeridian_crossing,
         'scale_estimates': scale_estimates,
-        'normalized': normalize,
-        'transform_info': transform_info
     }
-    
-    # Add scale conversion factors for SPDE parameters
-    if is_geo and not normalize:
+    if is_geo:
         projection_info['coordinate_units'] = 'meters'
         projection_info['unit_to_km'] = 0.001
-    elif normalize:
-        projection_info['coordinate_units'] = 'normalized'
-        if transform_info and 'scale_factors' in transform_info:
-            avg_scale = np.mean(np.abs(transform_info['scale_factors']))
-            projection_info['normalization_scale'] = avg_scale
     else:
         projection_info['coordinate_units'] = 'unknown'
     
-    # Add close_points info if not removing duplicates
     if not remove_duplicates and close_points:
         projection_info['close_points'] = close_points
     
-    # Print scale diagnostics
     print(f"Characteristic spatial scale: {scale_estimates['characteristic_scale']:.3f} {projection_info.get('coordinate_units', 'units')}")
     print(f"Recommended mesh edge length: {scale_estimates['mesh_recommended_edge']:.3f}")
-    
     if remove_duplicates:
         print(f"Coordinate preprocessing complete: {len(coords)} -> {len(clean_coords)} points")
     else:
@@ -589,48 +389,3 @@ def preprocess_coords(coords: np.ndarray,
     print(f"Projected extent: {x_max - x_min:.0f} × {y_max - y_min:.0f} {projection_info.get('coordinate_units', 'units')}")
     
     return clean_coords, kept_indices, projection_info
-
-
-# Example usage
-if __name__ == "__main__":
-    # Test with various coordinate types
-    
-    # Example 1: Small region (UTM expected)
-    print("=== Example 1: Small region ===")
-    local_coords = np.array([
-        [-122.4194, 37.7749],  # San Francisco
-        [-122.4094, 37.7849],
-        [-122.4294, 37.7649],
-        [-122.4394, 37.7549],
-        [-122.4494, 37.7449],
-        [-122.4594, 37.7349],
-        [-122.4694, 37.7249],
-    ])
-    
-    try:
-        clean_coords, indices, proj_info = preprocess_coords(local_coords)
-        print(f"Projection: {proj_info['system']}")
-        print(f"Proj4: {proj_info['proj4_string']}")
-        print()
-    except Exception as e:
-        print(f"Error: {e}\n")
-    
-    # Example 2: Continental scale (Albers expected)
-    print("=== Example 2: Continental scale ===")
-    continental_coords = np.array([
-        [-125.0, 49.0],  # Pacific Northwest
-        [-67.0, 45.0],   # Atlantic Northeast  
-        [-97.0, 25.0],   # Gulf Coast
-        [-120.0, 35.0],  # California
-        [-80.0, 26.0],   # Florida
-        [-110.0, 45.0],  # Mountain West
-        [-90.0, 40.0],   # Midwest
-    ])
-    
-    try:
-        clean_coords, indices, proj_info = preprocess_coords(continental_coords)
-        print(f"Projection: {proj_info['system']}")
-        print(f"Diameter: {proj_info['hull_diameter_km']:.1f} km")
-        print()
-    except Exception as e:
-        print(f"Error: {e}\n")

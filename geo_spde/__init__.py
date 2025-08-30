@@ -9,7 +9,6 @@ __author__ = "Mitzi Morris"
 from .coords import (
     preprocess_coords,
     estimate_characteristic_scale,
-    normalize_coordinates
 )
 
 # Mesh generation
@@ -47,7 +46,6 @@ __all__ = [
     # Coordinate processing
     'preprocess_coords',
     'estimate_characteristic_scale',
-    'normalize_coordinates',
     
     # Mesh generation
     'SPDEMesh',
