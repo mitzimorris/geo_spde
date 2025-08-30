@@ -467,14 +467,14 @@ class TestMeshOutput:
     def test_large_mesh_warning(self, capsys):
         """Test warning for large mesh"""
         # Create a mesh that will have many vertices
-        x = np.linspace(0, 10, 30)
-        y = np.linspace(0, 10, 30)
+        x = np.linspace(0, 10, 20)
+        y = np.linspace(0, 10, 20)
         xx, yy = np.meshgrid(x, y)
         coords = np.column_stack([xx.ravel(), yy.ravel()])
         
         mesh = SPDEMesh(coords)
         vertices, triangles = mesh.create_mesh(
-            target_edge_factor=0.1,  # Fine mesh
+            target_edge_factor=0.01,  # Fine mesh
             verbose=True
         )
         

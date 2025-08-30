@@ -613,7 +613,9 @@ class TestReturnValueStructure:
         # Check all required keys are present
         required_keys = {
             'proj4_string', 'system', 'scale', 'projected_bbox', 
-            'hull_diameter_km', 'antimeridian_crossing'
+            'hull_diameter_km', 'antimeridian_crossing',
+            'scale_estimates', 'transform_info', 'normalized', 
+            'coordinate_units'
         }
         assert set(proj_info.keys()) == required_keys
         
