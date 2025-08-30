@@ -1,10 +1,142 @@
 import numpy as np
 import pyproj
+
+from scipy.spatial import ConvexHull, distance_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.spatial.distance import pdist, squareform
-from scipy.spatial import ConvexHull
+
 from geo_spde.exceptions import CoordsError
 from typing import Tuple, Dict, Union, List
 
+
+def estimate_characteristic_scale(coords: np.ndarray, method: str = 'mst') -> Dict[str, float]:
+    """
+    Estimate characteristic spatial scale from point pattern.
+    
+    Parameters
+    ----------
+    coords : np.ndarray
+        Coordinate array (n_obs, 2)
+    method : str
+        'mst' for minimum spanning tree (fast)
+        'nn' for nearest neighbor distances
+        
+    Returns
+    -------
+    Dict with scale estimates:
+        - characteristic_scale: Typical correlation scale
+        - min_distance: Minimum non-zero distance
+        - median_distance: Median of all distances
+        - mesh_recommended_edge: Suggested mesh edge length
+    """
+    n_obs = len(coords)
+    
+    # Basic distance statistics
+    if n_obs < 500:
+        dists = distance_matrix(coords, coords)
+        dists_flat = dists[np.triu_indices(n_obs, k=1)]
+    else:
+        # Subsample for efficiency
+        idx = np.random.choice(n_obs, 500, replace=False)
+        dists = distance_matrix(coords[idx], coords[idx])
+        dists_flat = dists[np.triu_indices(len(idx), k=1)]
+    
+    min_dist = np.min(dists_flat[dists_flat > 0]) if np.any(dists_flat > 0) else 1.0
+    median_dist = np.median(dists_flat)
+    
+    if method == 'mst':
+        # Use MST to estimate connectivity scale
+        if n_obs > 1000:
+            idx = np.random.choice(n_obs, 1000, replace=False)
+            coords_sub = coords[idx]
+        else:
+            coords_sub = coords
+        
+        dist_matrix = distance_matrix(coords_sub, coords_sub)
+        mst = minimum_spanning_tree(dist_matrix)
+        mst_edges = mst.tocoo().data
+        
+        # Use 75th percentile of MST edges
+        characteristic_scale = np.percentile(mst_edges, 75)
+    else:  # nearest neighbor
+        # Find nearest neighbor for each point
+        nn_distances = []
+        for i in range(min(n_obs, 500)):
+            dists_i = dists[i] if n_obs < 500 else distance_matrix(coords[i:i+1], coords)[0]
+            dists_i[i] = np.inf  # Exclude self
+            nn_distances.append(np.min(dists_i))
+        
+        characteristic_scale = np.median(nn_distances) * 5  # Scale up from NN
+    
+    return {
+        'characteristic_scale': characteristic_scale,
+        'min_distance': min_dist,
+        'median_distance': median_dist,
+        'mesh_recommended_edge': characteristic_scale * 0.3
+    }
+
+
+def normalize_coordinates(coords: np.ndarray, 
+                         method: str = 'unit_square') -> Tuple[np.ndarray, Dict]:
+    """
+    Normalize coordinates for numerical stability.
+    
+    Parameters
+    ----------
+    coords : np.ndarray
+        Coordinates to normalize
+    method : str
+        'unit_square': Scale to [0, 1]²
+        'standardize': Zero mean, unit variance
+        'preserve_aspect': Scale to [-1, 1]² preserving aspect ratio
+        
+    Returns
+    -------
+    coords_norm : np.ndarray
+        Normalized coordinates
+    transform_info : Dict
+        Information to reverse transformation
+    """
+    min_coords = coords.min(axis=0)
+    max_coords = coords.max(axis=0)
+    coord_range = max_coords - min_coords
+    
+    # Avoid division by zero
+    coord_range[coord_range < 1e-10] = 1.0
+    
+    if method == 'unit_square':
+        coords_norm = (coords - min_coords) / coord_range
+        transform_info = {
+            'method': 'unit_square',
+            'min_coords': min_coords,
+            'max_coords': max_coords,
+            'scale_factors': 1.0 / coord_range
+        }
+    elif method == 'standardize':
+        mean_coords = coords.mean(axis=0)
+        std_coords = coords.std(axis=0)
+        std_coords[std_coords < 1e-10] = 1.0
+        coords_norm = (coords - mean_coords) / std_coords
+        transform_info = {
+            'method': 'standardize',
+            'mean_coords': mean_coords,
+            'std_coords': std_coords,
+            'scale_factors': 1.0 / std_coords
+        }
+    else:  # preserve_aspect
+        max_range = coord_range.max()
+        coords_norm = 2 * (coords - min_coords) / max_range - 1
+        center_offset = (2 - coord_range / max_range) / 2
+        coords_norm[:, 0] += center_offset[0]
+        coords_norm[:, 1] += center_offset[1]
+        transform_info = {
+            'method': 'preserve_aspect',
+            'min_coords': min_coords,
+            'max_range': max_range,
+            'scale_factors': np.array([2.0 / max_range, 2.0 / max_range])
+        }
+    
+    return coords_norm, transform_info
 
 def is_geographic(coords: np.ndarray) -> bool:
     """
@@ -303,40 +435,14 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
     
     return unique_coords, unique_indices, n_duplicates
 
-def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6, remove_duplicates: bool = True) -> Tuple[np.ndarray, np.ndarray, Dict]:
+def preprocess_coords(coords: np.ndarray, 
+                     tolerance: float = 1e-6, 
+                     remove_duplicates: bool = True,
+                     normalize: bool = False,
+                     normalize_method: str = 'unit_square') -> Tuple[np.ndarray, np.ndarray, Dict]:
     """
     Validate, project, and clean coordinates for SPDE spatial modeling.
-    
-    Parameters:
-    -----------
-    coords : np.ndarray
-        Input coordinates of shape (n_obs, 2)
-        Can be lon/lat (auto-detected) or already projected
-    tolerance : float
-        Tolerance for duplicate detection (default: 1e-6)
-    remove_duplicates : bool
-        If True, remove duplicate coordinates. If False, keep all coordinates
-        but report close points (default: True)
-        
-    Returns:
-    --------
-    projected_coords : np.ndarray
-        Clean projected coordinates
-    kept_indices : np.ndarray
-        Indices of non-duplicate points from original array (all indices if remove_duplicates=False)
-    projection_info : Dict
-        Dictionary containing:
-        - 'proj4_string': Proj4 projection string
-        - 'system': Projection system name
-        - 'scale': Auto-detected scale ('single_region', 'multi_region', 'global')
-        - 'projected_bbox': (x_min, y_min, x_max, y_max) in projected coords
-        - 'hull_diameter_km': Approximate diameter in kilometers
-        - 'antimeridian_crossing': Boolean flag
-        - 'close_points': List of close point pairs (if remove_duplicates=False)
-        
-    Raises:
-    -------
-    CoordsError : If input validation fails
+
     """
     
     # Input validation
@@ -429,32 +535,61 @@ def preprocess_coords(coords: np.ndarray, tolerance: float = 1e-6, remove_duplic
             print(f"Warning: Found {len(close_points)} close coordinate pairs (within tolerance={tolerance})")
             print("  Consider reviewing these points based on your domain knowledge")
     
-    # Compute projected bounding box
+    # NOW we have clean_coords defined, so we can estimate scales
+    scale_estimates = estimate_characteristic_scale(clean_coords)
+    
+    # Normalize if requested
+    transform_info = None
+    if normalize:
+        clean_coords, transform_info = normalize_coordinates(clean_coords, normalize_method)
+        print(f"Coordinates normalized using {normalize_method} method")
+    
+    # Compute projected bounding box (after potential normalization)
     x_min, x_max = clean_coords[:, 0].min(), clean_coords[:, 0].max()
     y_min, y_max = clean_coords[:, 1].min(), clean_coords[:, 1].max()
     projected_bbox = (x_min, y_min, x_max, y_max)
     
-    # Create projection info dictionary
+    # Create extended projection info dictionary
     projection_info = {
         'proj4_string': proj4_string,
         'system': system_name,
         'scale': detected_scale,
         'projected_bbox': projected_bbox,
         'hull_diameter_km': hull_diameter_km,
-        'antimeridian_crossing': antimeridian_crossing
+        'antimeridian_crossing': antimeridian_crossing,
+        'scale_estimates': scale_estimates,
+        'normalized': normalize,
+        'transform_info': transform_info
     }
+    
+    # Add scale conversion factors for SPDE parameters
+    if is_geo and not normalize:
+        projection_info['coordinate_units'] = 'meters'
+        projection_info['unit_to_km'] = 0.001
+    elif normalize:
+        projection_info['coordinate_units'] = 'normalized'
+        if transform_info and 'scale_factors' in transform_info:
+            avg_scale = np.mean(np.abs(transform_info['scale_factors']))
+            projection_info['normalization_scale'] = avg_scale
+    else:
+        projection_info['coordinate_units'] = 'unknown'
     
     # Add close_points info if not removing duplicates
     if not remove_duplicates and close_points:
         projection_info['close_points'] = close_points
     
+    # Print scale diagnostics
+    print(f"Characteristic spatial scale: {scale_estimates['characteristic_scale']:.3f} {projection_info.get('coordinate_units', 'units')}")
+    print(f"Recommended mesh edge length: {scale_estimates['mesh_recommended_edge']:.3f}")
+    
     if remove_duplicates:
         print(f"Coordinate preprocessing complete: {len(coords)} -> {len(clean_coords)} points")
     else:
         print(f"Coordinate preprocessing complete: {len(coords)} points retained")
-    print(f"Projected extent: {x_max - x_min:.0f} × {y_max - y_min:.0f} meters")
+    print(f"Projected extent: {x_max - x_min:.0f} × {y_max - y_min:.0f} {projection_info.get('coordinate_units', 'units')}")
     
     return clean_coords, kept_indices, projection_info
+
 
 # Example usage
 if __name__ == "__main__":

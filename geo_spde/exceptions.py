@@ -15,3 +15,11 @@ class MeshError(GeoSpdeError):
 class MatrixError(GeoSpdeError):
     """Raised for matrix computation errors"""
     pass
+
+class ParameterScaleError(GeoSpdeError):
+    """Raised when SPDE parameters (kappa/tau) are poorly scaled for the mesh"""
+    pass
+
+class ConditioningError(GeoSpdeError):
+    """Raised when numerical conditioning problems occur with precision matrix Q"""
+    pass

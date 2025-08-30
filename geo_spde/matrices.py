@@ -8,6 +8,7 @@ for maximum computational efficiency.
 
 import numpy as np
 from scipy import sparse
+from scipy.sparse.linalg import norm as sparse_norm, eigs
 from scipy.spatial import Delaunay, KDTree
 from typing import Tuple, Optional
 import warnings
@@ -650,3 +651,367 @@ def compute_spde_matrices_from_mesh(
         alpha=alpha,
         verbose=verbose
     )
+
+def select_reference_parameters(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    obs_coords: np.ndarray,
+    alpha: int = 1
+) -> Tuple[float, float]:
+    """
+    Automatically select reference kappa and tau based on mesh characteristics.
+    
+    Parameters
+    ----------
+    vertices : np.ndarray
+        Mesh vertex coordinates
+    triangles : np.ndarray
+        Triangle connectivity
+    obs_coords : np.ndarray
+        Observation coordinates
+    alpha : int
+        SPDE smoothness parameter (1 or 2)
+        
+    Returns
+    -------
+    kappa_ref : float
+        Reference kappa value
+    tau_ref : float
+        Reference tau value
+    """
+    # Compute mesh extent
+    x_range = vertices[:, 0].max() - vertices[:, 0].min()
+    y_range = vertices[:, 1].max() - vertices[:, 1].min()
+    mesh_extent = max(x_range, y_range)
+    
+    # Compute typical edge length
+    edge_lengths = []
+    for tri in triangles[:min(100, len(triangles))]:  # Sample triangles
+        for i in range(3):
+            j = (i + 1) % 3
+            edge = np.linalg.norm(vertices[tri[i]] - vertices[tri[j]])
+            edge_lengths.append(edge)
+    typical_edge = np.median(edge_lengths)
+    
+    # Reference range should be ~10-20% of domain
+    ref_range = mesh_extent * 0.15
+    
+    # Convert to kappa
+    if alpha == 1:  # Matérn nu=1/2
+        kappa_ref = np.sqrt(8) / ref_range
+    elif alpha == 2:  # Matérn nu=3/2
+        kappa_ref = np.sqrt(8 * 3) / ref_range
+    else:
+        raise ValueError(f"Unsupported alpha={alpha}")
+    
+    # Reference tau based on mesh resolution
+    # Want unit variance, scaled by mesh density
+    n_vertices = len(vertices)
+    mesh_area = x_range * y_range
+    vertex_density = n_vertices / mesh_area
+    
+    # Lower tau for denser meshes
+    tau_ref = 1.0 / np.sqrt(vertex_density * typical_edge)
+    
+    return kappa_ref, tau_ref
+
+def compute_fem_matrices_scaled(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    obs_coords: np.ndarray,
+    kappa: Optional[float] = None,
+    tau: Optional[float] = None,
+    alpha: int = 1,
+    auto_scale: bool = True,
+    check_conditioning: bool = True,
+    verbose: bool = True
+) -> Tuple[sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix, 
+           Optional[sparse.csr_matrix], dict]:
+    """
+    Compute FEM matrices with automatic parameter scaling.
+    
+    Parameters
+    ----------
+    vertices : np.ndarray
+        Mesh vertex coordinates
+    triangles : np.ndarray
+        Triangle connectivity
+    obs_coords : np.ndarray
+        Observation coordinates
+    kappa : float, optional
+        SPDE range parameter. If None and auto_scale=True, computed automatically
+    tau : float, optional
+        SPDE precision parameter. If None and auto_scale=True, computed automatically
+    alpha : int
+        SPDE smoothness parameter
+    auto_scale : bool
+        Automatically select parameters if not provided
+    check_conditioning : bool
+        Check and warn about conditioning issues
+    verbose : bool
+        Print progress and diagnostics
+        
+    Returns
+    -------
+    C : sparse.csr_matrix
+        Mass matrix
+    G : sparse.csr_matrix
+        Stiffness matrix
+    A : sparse.csr_matrix
+        Projector matrix
+    Q : sparse.csr_matrix or None
+        Precision matrix (if kappa provided)
+    scale_info : dict
+        Scaling information and diagnostics
+    """
+    # Get reference parameters if needed
+    if auto_scale and (kappa is None or tau is None):
+        kappa_ref, tau_ref = select_reference_parameters(
+            vertices, triangles, obs_coords, alpha
+        )
+        if kappa is None:
+            kappa = kappa_ref
+        if tau is None:
+            tau = tau_ref
+        
+        if verbose:
+            print(f"Auto-selected parameters:")
+            print(f"  kappa = {kappa:.4e} (range = {np.sqrt(8)/kappa:.3f})")
+            print(f"  tau = {tau:.4e} (sd = {1/np.sqrt(tau):.3f})")
+    
+    # Compute base matrices using existing function
+    C, G, A, _ = compute_fem_matrices(
+        vertices, triangles, obs_coords, 
+        kappa=1.0, alpha=alpha, verbose=False
+    )
+    
+    # Build Q with actual parameters
+    Q = None
+    scale_info = {
+        'kappa_used': kappa,
+        'tau_used': tau,
+        'auto_scaled': auto_scale
+    }
+    
+    if kappa is not None and tau is not None:
+        if alpha == 1:
+            Q_unscaled = kappa**2 * C + G
+        elif alpha == 2:
+            B = kappa**2 * C + G
+            # Q = B * C^{-1} * B (expensive but necessary)
+            Q_unscaled = compute_matern_precision_nu_three_halves(C, G, kappa)
+        else:
+            raise ValueError(f"Unsupported alpha={alpha}")
+        
+        Q = tau * Q_unscaled
+        
+        # Check conditioning if requested
+        if check_conditioning:
+            cond_info = check_precision_conditioning(Q, C, G, kappa, tau, verbose)
+            scale_info.update(cond_info)
+    
+    if verbose:
+        _print_scale_aware_diagnostics(C, G, A, Q, scale_info)
+    
+    return C, G, A, Q, scale_info
+
+def check_precision_conditioning(
+    Q: sparse.csr_matrix,
+    C: sparse.csr_matrix,
+    G: sparse.csr_matrix,
+    kappa: float,
+    tau: float,
+    verbose: bool = True
+) -> dict:
+    """
+    Check conditioning of precision matrix and warn about issues.
+    
+    Parameters
+    ----------
+    Q : sparse.csr_matrix
+        Precision matrix
+    C : sparse.csr_matrix
+        Mass matrix
+    G : sparse.csr_matrix
+        Stiffness matrix
+    kappa : float
+        Range parameter used
+    tau : float
+        Precision parameter used
+    verbose : bool
+        Print warnings
+        
+    Returns
+    -------
+    dict with conditioning diagnostics
+    """
+    n = Q.shape[0]
+    
+    # Estimate condition number using eigenvalues
+    # Get largest and smallest eigenvalues
+    try:
+        # Largest eigenvalue
+        lambda_max = eigs(Q, k=1, which='LM', return_eigenvectors=False)[0].real
+        # Smallest eigenvalue (most expensive)
+        lambda_min = eigs(Q, k=1, which='SM', return_eigenvectors=False)[0].real
+        
+        condition_number = lambda_max / lambda_min if lambda_min > 0 else np.inf
+    except:
+        # Fallback: use norm estimates
+        Q_norm = sparse_norm(Q, 'fro')
+        condition_number = Q_norm  # Rough estimate
+        lambda_max = Q_norm
+        lambda_min = None
+    
+    # Check ratio of kappa^2*C to G contributions
+    kappa_c_norm = sparse_norm(kappa**2 * C, 'fro')
+    g_norm = sparse_norm(G, 'fro')
+    dominance_ratio = kappa_c_norm / g_norm
+    
+    diagnostics = {
+        'condition_number': condition_number,
+        'lambda_max': lambda_max,
+        'lambda_min': lambda_min,
+        'dominance_ratio': dominance_ratio,
+        'well_conditioned': condition_number < 1e6
+    }
+    
+    if verbose:
+        if condition_number > 1e8:
+            warnings.warn(
+                f"Precision matrix is poorly conditioned (κ ≈ {condition_number:.2e}).\n"
+                f"  This typically means kappa is too large for the mesh scale.\n"
+                f"  Current kappa = {kappa:.4e} (range = {np.sqrt(8)/kappa:.3f})\n"
+                f"  Try reducing kappa or using auto_scale=True"
+            )
+        elif condition_number > 1e6:
+            warnings.warn(
+                f"Precision matrix conditioning is marginal (κ ≈ {condition_number:.2e}).\n"
+                f"  Consider adjusting parameters if convergence issues occur."
+            )
+        
+        if dominance_ratio > 100:
+            warnings.warn(
+                f"Mass matrix term dominates (ratio = {dominance_ratio:.1f}).\n"
+                f"  The spatial correlation is very short relative to mesh.\n"
+                f"  Consider reducing kappa or using a finer mesh."
+            )
+        elif dominance_ratio < 0.01:
+            warnings.warn(
+                f"Stiffness matrix term dominates (ratio = {dominance_ratio:.3f}).\n"
+                f"  The spatial correlation is very long relative to mesh.\n"
+                f"  Consider increasing kappa or using a coarser mesh."
+            )
+    
+    return diagnostics
+
+def normalize_coordinates_for_stability(
+    vertices: np.ndarray,
+    obs_coords: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, dict]:
+    """
+    Normalize coordinates to unit square for numerical stability.
+    
+    Parameters
+    ----------
+    vertices : np.ndarray
+        Mesh vertices
+    obs_coords : np.ndarray
+        Observation coordinates
+        
+    Returns
+    -------
+    vertices_norm : np.ndarray
+        Normalized vertices
+    obs_coords_norm : np.ndarray
+        Normalized observation coordinates
+    transform_info : dict
+        Information to reverse transformation
+    """
+    # Find bounding box
+    all_coords = np.vstack([vertices, obs_coords])
+    min_coords = all_coords.min(axis=0)
+    max_coords = all_coords.max(axis=0)
+    coord_range = max_coords - min_coords
+    
+    # Avoid division by zero
+    coord_range[coord_range < 1e-10] = 1.0
+    
+    # Normalize to [0, 1]
+    vertices_norm = (vertices - min_coords) / coord_range
+    obs_coords_norm = (obs_coords - min_coords) / coord_range
+    
+    transform_info = {
+        'min_coords': min_coords,
+        'max_coords': max_coords,
+        'coord_range': coord_range,
+        'scale_factor': 1.0 / coord_range
+    }
+    
+    return vertices_norm, obs_coords_norm, transform_info
+
+def scale_parameters_to_normalized(
+    kappa: float,
+    tau: float,
+    transform_info: dict
+) -> Tuple[float, float]:
+    """
+    Scale SPDE parameters for normalized coordinates.
+    
+    Parameters
+    ----------
+    kappa : float
+        Original kappa (in original coordinate units)
+    tau : float
+        Original tau
+    transform_info : dict
+        From normalize_coordinates_for_stability
+        
+    Returns
+    -------
+    kappa_norm : float
+        Kappa for normalized coordinates
+    tau_norm : float
+        Tau for normalized coordinates
+    """
+    # Average scale factor
+    avg_scale = np.mean(transform_info['scale_factor'])
+    
+    # Kappa scales inversely with distance
+    kappa_norm = kappa / avg_scale
+    
+    # Tau scales with area (2D)
+    tau_norm = tau * (avg_scale ** 2)
+    
+    return kappa_norm, tau_norm
+
+def _print_scale_aware_diagnostics(
+    C: sparse.csr_matrix,
+    G: sparse.csr_matrix,
+    A: sparse.csr_matrix,
+    Q: Optional[sparse.csr_matrix],
+    scale_info: dict
+) -> None:
+    """Print scale-aware diagnostics."""
+    print("\nScale-Aware Matrix Diagnostics:")
+    
+    if 'kappa_used' in scale_info and scale_info['kappa_used'] is not None:
+        kappa = scale_info['kappa_used']
+        tau = scale_info['tau_used']
+        print(f"  Parameters:")
+        print(f"    kappa = {kappa:.4e} (range ≈ {np.sqrt(8)/kappa:.3f} units)")
+        print(f"    tau = {tau:.4e} (marginal sd ≈ {1/np.sqrt(tau):.3f})")
+    
+    if 'condition_number' in scale_info:
+        cond = scale_info['condition_number']
+        status = "good" if cond < 1e4 else "marginal" if cond < 1e6 else "poor"
+        print(f"  Conditioning: {status} (κ ≈ {cond:.2e})")
+    
+    if 'dominance_ratio' in scale_info:
+        ratio = scale_info['dominance_ratio']
+        if ratio > 10:
+            print(f"  Warning: Mass matrix dominates (short-range correlation)")
+        elif ratio < 0.1:
+            print(f"  Warning: Stiffness matrix dominates (long-range correlation)")
+        else:
+            print(f"  Balance: Good (mass/stiffness ratio = {ratio:.2f})")
