@@ -20,13 +20,11 @@ from .matrices import (
     compute_fem_matrices_scaled,
     select_reference_parameters,
     check_precision_conditioning,
-    normalize_coordinates_for_stability
 )
 
 # Stan data preparation
 from .stan_data_prep import (
     prepare_stan_data,
-    translate_parameters_to_original_scale,
     validate_prior_compatibility,
     generate_synthetic_data,
     create_stan_init
@@ -55,11 +53,9 @@ __all__ = [
     'compute_fem_matrices_scaled',
     'select_reference_parameters',
     'check_precision_conditioning',
-    'normalize_coordinates_for_stability',
     
     # Stan integration
     'prepare_stan_data',
-    'translate_parameters_to_original_scale',
     'validate_prior_compatibility',
     'generate_synthetic_data',
     'create_stan_init',

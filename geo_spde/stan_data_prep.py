@@ -2,7 +2,7 @@
 Stan data preparation for SPDE models.
 
 This module handles the complete pipeline from raw coordinates to Stan-ready data,
-always working in normalized [0,1] coordinates for optimal HMC sampling.
+working with projected coordinates in meters for spatial modeling.
 """
 
 import numpy as np
@@ -29,7 +29,7 @@ def prepare_stan_data(
 ) -> Dict[str, Any]:
     """
     Complete pipeline from raw coordinates to Stan data.
-    Always normalizes to [0,1] for optimal sampling geometry.
+    Works with projected coordinates (in meters) for spatial modeling.
     
     Parameters
     ----------
@@ -63,15 +63,13 @@ def prepare_stan_data(
         print("SPDE Stan Data Preparation")
         print("="*60)
     
-    # Step 1: Preprocess and normalize to [0,1]
+    # Step 1: check coords, correct prejection as needed
     coords_proj, kept_idx, proj_info = preprocess_coords(
         coords_raw, 
-        normalize=True,  # Always normalize!
-        normalize_method='unit_square'
     )
     y_clean = y_obs[kept_idx]
     
-    # Step 2: Create mesh in normalized space
+    # Step 2: Create mesh
     mesh = SPDEMesh(coords_proj, proj_info)
     vertices, triangles = mesh.create_mesh(
         target_edge_factor=mesh_resolution,
@@ -82,7 +80,7 @@ def prepare_stan_data(
     # Step 3: Compute scale diagnostics
     scale_diag = mesh.compute_scale_diagnostics(verbose=False)
     
-    # Step 4: Compute FEM matrices in normalized space
+    # Step 4: Compute FEM matrices
     C, G, A, Q_base = compute_fem_matrices(
         vertices, triangles, coords_proj,
         kappa=1.0,  # Reference value
@@ -133,8 +131,7 @@ def prepare_stan_data(
     
     # Add metadata for interpretation
     metadata = {
-        'coordinate_system': 'normalized_unit_square',
-        'original_projection': proj_info,
+        'projection': proj_info,
         'scaling': scale_diag,
         'priors': priors,
         'mesh_info': mesh.get_mesh_info()
@@ -143,9 +140,8 @@ def prepare_stan_data(
     if verbose:
         print("\n" + "="*60)
         print("Data Preparation Complete")
-        print(f"  Mesh: {stan_data['N_mesh']} vertices in [0,1]²")
+        print(f"  Mesh: {stan_data['N_mesh']} vertices")
         print(f"  Observations: {stan_data['N_obs']}")
-        print(f"  Prior range (normalized): {priors['range_normalized']:.3f}")
         print(f"  Prior range (km): {priors['range_km']:.1f}")
         print("="*60)
     
@@ -163,7 +159,7 @@ def compute_prior_specifications(
     verbose: bool = True
 ) -> Dict:
     """
-    Compute prior specifications in normalized space.
+    Compute prior specifications for projected coordinates.
     
     Parameters
     ----------
@@ -180,40 +176,34 @@ def compute_prior_specifications(
         
     Returns
     -------
-    Dict with prior specifications in normalized space
+    Dict with prior specifications for projected coordinates
     """
-    # Get scale conversion factor
-    if 'transform_info' in proj_info:
-        # We have normalized coordinates
-        transform = proj_info['transform_info']
-        if transform['method'] == 'unit_square':
-            # Original extent in meters
-            original_extent_m = np.max(1.0 / transform['scale_factors'])
-            original_extent_km = original_extent_m / 1000
-        else:
-            # Approximate from scale factors
-            original_extent_km = np.max(1.0 / np.abs(transform['scale_factors'])) / 1000
-    else:
-        # Use hull diameter
-        original_extent_km = proj_info.get('hull_diameter_km', 100)
+    # Use hull diameter
+    original_extent_km = proj_info.get('hull_diameter_km', 100)
     
     # Determine target range
     if target_range_km is None:
-        # Use data-driven estimate
-        suggested_range_norm = scale_diag['suggestions']['spatial_range_suggestion']
-        target_range_km = suggested_range_norm * original_extent_km
+        # Use data-driven estimate from mesh diagnostics
+        suggested_range_meters = scale_diag['suggestions']['spatial_range_suggestion']
+        # Convert to km if coordinates are in meters
+        if proj_info.get('coordinate_units') == 'meters':
+            target_range_km = suggested_range_meters / 1000
+        else:
+            # Assume already in reasonable units
+            target_range_km = suggested_range_meters
         if verbose:
             print(f"Auto-selected correlation range: {target_range_km:.1f} km")
     
-    # Convert to normalized space
-    # In [0,1], a range of 0.1 means 10% of domain
-    range_normalized = target_range_km / original_extent_km
-    
-    # Ensure reasonable bounds
-    range_normalized = np.clip(range_normalized, 0.05, 0.5)
+    # Convert range to meters for kappa calculation
+    if proj_info.get('coordinate_units') == 'meters':
+        range_meters = target_range_km * 1000
+    else:
+        # If units unknown, use raw value
+        range_meters = target_range_km
     
     # Convert to kappa (for Matérn ν=1/2)
-    kappa_mean = np.sqrt(8) / range_normalized
+    # kappa = sqrt(8) / range for exponential correlation
+    kappa_mean = np.sqrt(8) / range_meters
     kappa_sd = kappa_mean / 3  # Allow variation within factor of 3
     
     # Tau based on desired variance
@@ -222,7 +212,7 @@ def compute_prior_specifications(
     
     priors = {
         'range_km': target_range_km,
-        'range_normalized': range_normalized,
+        'range_meters': range_meters if proj_info.get('coordinate_units') == 'meters' else None,
         'kappa_mean': kappa_mean,
         'kappa_sd': kappa_sd,
         'tau_mean': tau_mean,
@@ -232,28 +222,30 @@ def compute_prior_specifications(
     }
     
     if verbose:
-        print(f"\nPrior Specifications (normalized space):")
-        print(f"  Correlation range: {target_range_km:.1f} km = {range_normalized:.3f} normalized")
-        print(f"  Kappa prior: Normal({kappa_mean:.2f}, {kappa_sd:.2f})")
+        print(f"\nPrior Specifications:")
+        print(f"  Correlation range: {target_range_km:.1f} km")
+        if proj_info.get('coordinate_units') == 'meters':
+            print(f"  Range in coordinate units: {range_meters:.1f} meters")
+        print(f"  Kappa prior: Normal({kappa_mean:.2e}, {kappa_sd:.2e})")
         print(f"  Tau prior: Normal({tau_mean:.2f}, {tau_sd:.2f})")
     
     return priors
 
 
-def translate_parameters_to_original_scale(
-    kappa_normalized: float,
-    tau_normalized: float,
+def translate_parameters_to_interpretable_units(
+    kappa: float,
+    tau: float,
     metadata: Dict
 ) -> Dict:
     """
-    Convert parameters from normalized space back to original units.
+    Convert SPDE parameters to interpretable units.
     
     Parameters
     ----------
-    kappa_normalized : float
-        Kappa in [0,1] space
-    tau_normalized : float
-        Tau in [0,1] space
+    kappa : float
+        Kappa parameter in coordinate units
+    tau : float
+        Tau parameter (precision)
     metadata : Dict
         From prepare_stan_data
         
@@ -261,30 +253,40 @@ def translate_parameters_to_original_scale(
     -------
     Dict with parameters in interpretable units
     """
-    # Get scale factor
-    original_extent_km = metadata['priors']['original_extent_km']
+    proj_info = metadata.get('projection', {})
     
     # Convert kappa to range
-    range_normalized = np.sqrt(8) / kappa_normalized
-    range_km = range_normalized * original_extent_km
+    range_coord_units = np.sqrt(8) / kappa
+    
+    # Convert to km if we know the units
+    if proj_info.get('coordinate_units') == 'meters':
+        range_km = range_coord_units / 1000
+    else:
+        # Can't convert without knowing units
+        range_km = None
     
     # Variance from tau
-    variance = 1.0 / tau_normalized
+    variance = 1.0 / tau
     sd = np.sqrt(variance)
     
-    return {
-        'range_km': range_km,
-        'range_normalized': range_normalized,
+    result = {
+        'range_coord_units': range_coord_units,
         'spatial_sd': sd,
         'spatial_variance': variance,
-        'kappa_original': kappa_normalized * original_extent_km * 1000,  # in meters
-        'tau_original': tau_normalized / (original_extent_km * 1000)**2
+        'kappa': kappa,
+        'tau': tau
     }
+    
+    if range_km is not None:
+        result['range_km'] = range_km
+        
+    return result
 
 
 def validate_prior_compatibility(
     priors: Dict,
     mesh_params: Dict,
+    proj_info: Dict,
     verbose: bool = True
 ) -> Dict[str, bool]:
     """
@@ -296,6 +298,8 @@ def validate_prior_compatibility(
         Prior specifications
     mesh_params : Dict
         Mesh parameters
+    proj_info : Dict
+        Projection information
     verbose : bool
         Print warnings
         
@@ -303,20 +307,29 @@ def validate_prior_compatibility(
     -------
     Dict with validation results
     """
-    range_norm = priors['range_normalized']
     mesh_edge = mesh_params['max_edge']
     
+    # Get range in same units as mesh
+    if 'range_meters' in priors and priors['range_meters'] is not None:
+        range_coord = priors['range_meters']
+    else:
+        # Try to use kappa to get range
+        range_coord = np.sqrt(8) / priors['kappa_mean']
+    
     # Check if mesh is fine enough
-    edge_to_range = mesh_edge / range_norm
+    edge_to_range = mesh_edge / range_coord
     resolution_ok = edge_to_range < 0.5
     
-    # Check if range is reasonable
-    range_ok = 0.02 < range_norm < 0.8
+    # Check if range is reasonable relative to domain
+    domain_extent = mesh_params.get('domain_extent', range_coord * 10)
+    range_to_domain = range_coord / domain_extent
+    range_ok = 0.02 < range_to_domain < 0.8
     
     validation = {
         'resolution_ok': resolution_ok,
         'range_ok': range_ok,
-        'edge_to_range_ratio': edge_to_range
+        'edge_to_range_ratio': edge_to_range,
+        'range_to_domain_ratio': range_to_domain
     }
     
     if verbose:
@@ -328,8 +341,9 @@ def validate_prior_compatibility(
             )
         if not range_ok:
             warnings.warn(
-                f"Prior range {range_norm:.3f} may be extreme.\n"
-                f"  Consider range in [0.05, 0.5] for normalized coordinates"
+                f"Prior range may be extreme relative to domain.\n"
+                f"  Range/Domain ratio: {range_to_domain:.3f} (should be in [0.02, 0.8])\n"
+                f"  Consider adjusting correlation range"
             )
     
     return validation
@@ -343,14 +357,14 @@ def generate_synthetic_data(
     seed: Optional[int] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Generate synthetic data in normalized space for testing.
+    Generate synthetic data for testing.
     
     Parameters
     ----------
     mesh : SPDEMesh
-        Mesh object with vertices in [0,1]
+        Mesh object with vertices in projected coordinates
     kappa : float
-        Range parameter in normalized space
+        Range parameter in coordinate units
     tau : float
         Precision parameter
     sigma : float
