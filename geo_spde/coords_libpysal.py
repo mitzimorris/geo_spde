@@ -182,24 +182,6 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
 
 
 # Additional libpysal-specific utilities
-def create_spatial_weights(coords: np.ndarray, k: int = 4) -> 'libpysal.weights.W':
-    """
-    Create k-nearest neighbor spatial weights using libpysal.
-    
-    @param coords: Coordinate array of shape (n_obs, 2)
-    @param k: Number of nearest neighbors
-    @returns: libpysal weights object
-    """
-    if not HAS_LIBPYSAL:
-        raise ImportError("libpysal is required for spatial weights creation")
-    
-    # Handle coincident points as recommended by libpysal
-    kd = libpysal.cg.KDTree(coords)
-    w = libpysal.weights.KNN(kd, k=k)
-    
-    return w
-
-
 def compute_alpha_shape(coords: np.ndarray, alpha: float = None) -> np.ndarray:
     """
     Compute alpha shape (concave hull) using libpysal.

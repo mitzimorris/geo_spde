@@ -64,28 +64,23 @@ def compute_fem_matrices(
         print(f"  Mesh: {n_mesh} vertices, {n_tri} triangles")
         print(f"  Observations: {n_obs} points")
     
-    # Compute C matrix (Mass matrix)
     if verbose:
         print("  Computing C matrix (Mass)...")
     C = _compute_mass_matrix_vectorized(vertices, triangles)
     
-    # Compute G matrix (Stiffness matrix) 
     if verbose:
         print("  Computing G matrix (Stiffness)...")
     G = _compute_stiffness_matrix_vectorized(vertices, triangles)
     
-    # Compute A matrix (Projector matrix)
     if verbose:
         print("  Computing A matrix (Projector)...")
     A = _compute_projector_matrix_vectorized(vertices, triangles, obs_coords)
-    
-    # Compute Q matrix (Precision matrix) if kappa provided
+
     Q = None
     if kappa is not None:
         if verbose:
             matern_nu = "1/2" if alpha == 1 else "3/2"
             print(f"  Computing Q matrix (Matern nu={matern_nu} precision)...")
-        
         if alpha == 1:
             Q = compute_matern_precision_nu_half(C, G, kappa)
         elif alpha == 2:

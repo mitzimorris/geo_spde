@@ -391,12 +391,10 @@ class SPDEMesh:
         """
         n_obs = len(self.coords)
         
-        # Basic distance statistics
         if n_obs < 100:
             dists = distance_matrix(self.coords, self.coords)
             dists_flat = dists[np.triu_indices(n_obs, k=1)]
         else:
-            # Subsample for efficiency
             idx = np.random.choice(n_obs, min(100, n_obs), replace=False)
             dists_sub = distance_matrix(self.coords[idx], self.coords[idx])
             dists_flat = dists_sub[np.triu_indices(len(idx), k=1)]
@@ -413,10 +411,10 @@ class SPDEMesh:
             try:
                 var_range = self._estimate_range_variogram(max_pairs)
                 results['estimated_range'] = var_range
-                results['practical_range'] = var_range * 3  # For exponential
+                results['practical_range'] = var_range * 3
                 results['method_used'] = 'variogram'
             except:
-                method = 'mst'  # Fallback
+                method = 'mst'
         
         if method in ['mst', 'both']:
             mst_scale = self._estimate_range_mst()
@@ -427,18 +425,20 @@ class SPDEMesh:
             else:
                 results['mst_range'] = mst_scale
         
-        # Store for later use
         self.spatial_scale = results
         return results
     
     def _estimate_range_variogram(self, max_pairs: int = 5000) -> float:
         """
         Estimate range using empirical variogram with exponential model.
+        
         Assumes data would have constant mean and exponential covariance.
+        
+        :param max_pairs: Maximum pairs to use for computational efficiency
+        :return: Estimated range parameter
         """
         n_obs = len(self.coords)
         
-        # Create subset if needed
         if n_obs * (n_obs - 1) / 2 > max_pairs:
             n_sub = int(np.sqrt(max_pairs * 2))
             idx = np.random.choice(n_obs, n_sub, replace=False)
@@ -446,16 +446,13 @@ class SPDEMesh:
         else:
             coords_sub = self.coords
         
-        # Compute pairwise distances
         dists = distance_matrix(coords_sub, coords_sub)
         dists_flat = dists[np.triu_indices(len(coords_sub), k=1)]
         
-        # Bin distances
         max_dist = np.percentile(dists_flat, 50)
         n_bins = min(20, len(dists_flat) // 50)
         bins = np.linspace(0, max_dist, n_bins)
         
-        # Distance-based variance estimation
         bin_centers = (bins[:-1] + bins[1:]) / 2
         distance_variance = np.zeros(len(bin_centers))
         
@@ -464,7 +461,6 @@ class SPDEMesh:
             if np.sum(mask) > 5:
                 distance_variance[i] = np.var(dists_flat[mask])
         
-        # Fit exponential decay
         valid = distance_variance > 0
         if np.sum(valid) < 3:
             raise ValueError("Insufficient data for variogram fitting")
@@ -490,7 +486,10 @@ class SPDEMesh:
     def _estimate_range_mst(self) -> float:
         """
         Estimate spatial scale using minimum spanning tree edge lengths.
+        
         The MST captures the essential connectivity scale of the points.
+        
+        :return: Characteristic spatial scale
         """
         n_obs = len(self.coords)
         
@@ -500,38 +499,24 @@ class SPDEMesh:
         else:
             coords_sub = self.coords
         
-        # Build MST
         dists = distance_matrix(coords_sub, coords_sub)
         mst = minimum_spanning_tree(dists)
         
-        # Get MST edge lengths
         mst_edges = mst.tocoo()
         edge_lengths = mst_edges.data
         
-        # Use 75th percentile of MST edges as characteristic scale
         return np.percentile(edge_lengths, 75)
     
     def validate_mesh_resolution(self, verbose: bool = True) -> Dict[str, bool]:
         """
         Check if mesh resolution is appropriate for the estimated correlation range.
         
-        Parameters
-        ----------
-        verbose : bool
-            Print warnings
-            
-        Returns
-        -------
-        Dict with validation results:
-            - 'resolution_ok': Is mesh fine enough for correlation range?
-            - 'extent_ok': Is mesh extent large enough?
-            - 'edge_to_range_ratio': Ratio of edge length to correlation range
-            - 'recommended_edge_factor': Suggested target_edge_factor
+        :param verbose: Print warnings
+        :return: Dict with validation results: resolution_ok, extent_ok, edge_to_range_ratio, recommended_edge_factor
         """
         if self.mesh_params is None:
             raise MeshError("Mesh parameters not computed. Call create_mesh() first.")
         
-        # Get spatial scale if not already computed
         if not hasattr(self, 'spatial_scale'):
             self.estimate_spatial_scale()
         
@@ -539,11 +524,9 @@ class SPDEMesh:
         estimated_range = self.spatial_scale['estimated_range']
         practical_range = self.spatial_scale.get('practical_range', estimated_range * 3)
         
-        # Rule of thumb: need at least 3-5 mesh elements per correlation range
         edge_to_range_ratio = max_edge / estimated_range
         resolution_ok = edge_to_range_ratio < 0.5
         
-        # Check mesh extent
         if self.vertices is not None:
             mesh_extent = np.max([
                 self.vertices[:, 0].max() - self.vertices[:, 0].min(),
@@ -551,7 +534,7 @@ class SPDEMesh:
             ])
             extent_ok = mesh_extent > practical_range * 2
         else:
-            extent_ok = True  # Can't check without mesh
+            extent_ok = True
             mesh_extent = None
         
         validation = {
@@ -578,17 +561,8 @@ class SPDEMesh:
         """
         Suggest reasonable SPDE parameters based on mesh and data characteristics.
         
-        Returns
-        -------
-        Dict with suggested parameters:
-            - 'kappa_suggestion': Suggested kappa value
-            - 'tau_suggestion': Suggested tau value
-            - 'spatial_range_suggestion': In mesh units
-            - 'spatial_sd_suggestion': Marginal standard deviation
-            - 'prior_range_kappa': (lower, upper) for kappa prior
-            - 'prior_range_tau': (lower, upper) for tau prior
+        :return: Dict with suggested parameters: kappa_suggestion, tau_suggestion, spatial_range_suggestion, spatial_sd_suggestion, prior_range_kappa, prior_range_tau
         """
-        # Ensure we have spatial scale estimates
         if not hasattr(self, 'spatial_scale'):
             self.estimate_spatial_scale()
         
@@ -596,22 +570,16 @@ class SPDEMesh:
         min_dist = self.spatial_scale['min_distance']
         median_dist = self.spatial_scale['median_distance']
         
-        # Compute mesh extent
         x_range = self.coords[:, 0].max() - self.coords[:, 0].min()
         y_range = self.coords[:, 1].max() - self.coords[:, 1].min()
         mesh_extent = max(x_range, y_range)
         
-        # Suggest range as fraction of domain
         suggested_range = np.clip(estimated_range, mesh_extent * 0.05, mesh_extent * 0.3)
         
-        # Convert to kappa (for Matérn nu=1/2)
         kappa_suggestion = np.sqrt(8) / suggested_range
         
-        # Tau suggestion based on domain size
-        # Smaller tau for larger domains to maintain reasonable variance
         tau_suggestion = 1.0 / np.sqrt(mesh_extent / median_dist)
         
-        # Prior ranges: within order of magnitude
         kappa_prior_range = (kappa_suggestion / 3, kappa_suggestion * 3)
         tau_prior_range = (tau_suggestion / 3, tau_suggestion * 3)
         
@@ -633,28 +601,18 @@ class SPDEMesh:
         """
         Compute comprehensive scale diagnostics after mesh creation.
         
-        Parameters
-        ----------
-        verbose : bool
-            Print diagnostic information
-            
-        Returns
-        -------
-        Dict containing spatial scale, validation, and parameter suggestions
+        :param verbose: Print diagnostic information
+        :return: Dict containing spatial scale, validation, and parameter suggestions
         """
         if self.vertices is None:
             raise MeshError("Mesh must be created before computing scale diagnostics")
         
-        # Estimate spatial scales
         spatial_scale = self.estimate_spatial_scale(method='both')
         
-        # Validate mesh
         validation = self.validate_mesh_resolution(verbose=verbose)
         
-        # Get parameter suggestions
         suggestions = self.suggest_spde_parameters()
         
-        # Store everything
         self.scale_diagnostics = {
             'spatial_scale': spatial_scale,
             'validation': validation,
