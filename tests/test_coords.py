@@ -580,6 +580,172 @@ class TestFullPreprocessing:
         assert 2 not in indices_default
 
 
+class TestCoordinateRescaling:
+    """Test coordinate rescaling functionality for regions > 100 km"""
+    
+    def test_small_region_no_rescaling(self):
+        """Test that small regions (<100 km) are not rescaled"""
+        # Create coordinates for a small region (~50 km extent)
+        coords = np.array([
+            [-122.5, 37.7],  # SF Bay Area
+            [-122.4, 37.8],  
+            [-122.3, 37.9],
+            [-122.2, 38.0],
+            [-122.1, 38.1],
+            [-122.0, 38.2],
+            [-121.9, 38.3]   # Small region ~50 km
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Should remain in meters
+        assert proj_info['coordinate_units'] == 'meters'
+        assert proj_info['unit_to_km'] == 0.001
+        assert proj_info['rescale_factor'] == 1.0
+        
+        # Coordinates should be in typical UTM meter range
+        assert result_coords[0, 0] > 100000  # Typical UTM easting in meters
+    
+    def test_large_region_rescaling(self):
+        """Test that large regions (>100 km) are rescaled to kilometers"""
+        # Create coordinates spanning ~700 km
+        coords = np.array([
+            [-122.0, 37.0],  # California coast
+            [-121.0, 38.0],
+            [-120.0, 39.0],
+            [-119.0, 40.0],
+            [-118.0, 41.0],
+            [-117.0, 42.0],
+            [-116.0, 43.0]   # Spans ~700 km north-south
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Should be rescaled to kilometers
+        assert proj_info['coordinate_units'] == 'kilometers'
+        assert proj_info['unit_to_km'] == 1.0
+        assert proj_info['rescale_factor'] == 0.001
+        
+        # Coordinates should be in km range (much smaller numbers)
+        assert result_coords[0, 0] < 1000  # Should be in km, not meters
+        assert result_coords[0, 0] > 0
+    
+    def test_edge_case_exactly_100km(self):
+        """Test behavior at exactly 100 km threshold"""
+        # Create coordinates that span less than 100 km
+        # Using a more conservative estimate to stay under 100 km
+        coords = np.array([
+            [0.0, 0.0],      # Start point
+            [0.8, 0.0],      # ~89 km east (at equator, 1 degree ≈ 111 km)
+            [0.0, 0.8],      # ~89 km north  
+            [0.4, 0.4],      # Center point
+            [0.2, 0.2],
+            [0.6, 0.6],
+            [0.3, 0.7]
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Should be just under 100 km, so remain in meters (threshold is >100 km)
+        assert proj_info['coordinate_units'] == 'meters'
+        assert proj_info['rescale_factor'] == 1.0
+    
+    def test_edge_case_just_over_100km(self):
+        """Test behavior just over 100 km threshold"""
+        # Create coordinates that span just over 100 km
+        coords = np.array([
+            [0.0, 0.0],      # Start point
+            [0.95, 0.0],     # ~105 km east
+            [0.0, 0.95],     # ~105 km north  
+            [0.5, 0.5],      # Center point
+            [0.2, 0.2],
+            [0.7, 0.7],
+            [0.3, 0.8]
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Should be just over 100 km, so rescaled to kilometers
+        assert proj_info['coordinate_units'] == 'kilometers'
+        assert proj_info['rescale_factor'] == 0.001
+    
+    def test_very_large_region_rescaling(self):
+        """Test rescaling for very large regions (continental scale)"""
+        # Create coordinates spanning multiple time zones (~3000 km)
+        coords = np.array([
+            [-125.0, 49.0],  # Vancouver area
+            [-120.0, 45.0],  # Portland area
+            [-115.0, 42.0],  # Idaho
+            [-110.0, 39.0],  # Utah
+            [-105.0, 36.0],  # Colorado
+            [-100.0, 33.0],  # Texas
+            [-95.0, 30.0]    # Houston area
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Should definitely be rescaled to kilometers
+        assert proj_info['coordinate_units'] == 'kilometers'
+        assert proj_info['unit_to_km'] == 1.0
+        assert proj_info['rescale_factor'] == 0.001
+        
+        # Check that extent is reasonable in km (should be ~2000-3000 km)
+        extent_x = result_coords[:, 0].max() - result_coords[:, 0].min()
+        extent_y = result_coords[:, 1].max() - result_coords[:, 1].min()
+        max_extent = max(extent_x, extent_y)
+        assert 2000 < max_extent < 4000  # Should be in thousands of km
+    
+    def test_rescaling_only_for_geographic_coords(self):
+        """Test that rescaling only applies to geographic coordinates"""
+        # Use already-projected coordinates (large extent in meters)
+        coords = np.array([
+            [100000, 4000000],   # Large UTM-like coordinates
+            [200000, 4100000],   # 100+ km extent
+            [300000, 4200000],
+            [400000, 4300000],
+            [500000, 4400000],
+            [600000, 4500000],
+            [700000, 4600000]
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Should NOT be rescaled (not detected as geographic)
+        assert proj_info['coordinate_units'] == 'unknown'
+        assert proj_info['rescale_factor'] == 1.0
+        # Coordinates should remain unchanged
+        np.testing.assert_array_equal(result_coords, coords)
+    
+    def test_rescaling_affects_scale_estimates(self):
+        """Test that rescaling properly affects characteristic scale estimates"""
+        # Large region coordinates
+        coords = np.array([
+            [-122.0, 37.0],
+            [-121.0, 38.0], 
+            [-120.0, 39.0],
+            [-119.0, 40.0],
+            [-118.0, 41.0],
+            [-117.0, 42.0],
+            [-116.0, 43.0]
+        ])
+        
+        result_coords, indices, proj_info = preprocess_coords(coords)
+        
+        # Scale estimates should be in km units
+        scale_estimates = proj_info['scale_estimates']
+        assert 'characteristic_scale' in scale_estimates
+        
+        # For rescaled coordinates, scale should be reasonable in km
+        char_scale = scale_estimates['characteristic_scale']
+        assert 10 < char_scale < 1000  # Should be tens to hundreds of km
+        
+        # Check that projected bbox is also in km
+        bbox = proj_info['projected_bbox']
+        extent_x = bbox[2] - bbox[0]  # max_x - min_x
+        extent_y = bbox[3] - bbox[1]  # max_y - min_y
+        assert max(extent_x, extent_y) > 100  # Should be hundreds of km
+
+
 class TestReturnValueStructure:
     """Test the structure and content of return values"""
     
@@ -602,7 +768,7 @@ class TestReturnValueStructure:
         required_keys = {
             'proj4_string', 'system', 'scale', 'projected_bbox', 
             'hull_diameter_km', 'antimeridian_crossing',
-            'scale_estimates', 'coordinate_units'
+            'scale_estimates', 'coordinate_units', 'unit_to_km', 'rescale_factor'
         }
         assert set(proj_info.keys()) == required_keys
         

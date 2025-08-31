@@ -184,26 +184,20 @@ def compute_prior_specifications(
     # Determine target range
     if target_range_km is None:
         # Use data-driven estimate from mesh diagnostics
-        suggested_range_meters = scale_diag['suggestions']['spatial_range_suggestion']
-        # Convert to km if coordinates are in meters
-        if proj_info.get('coordinate_units') == 'meters':
-            target_range_km = suggested_range_meters / 1000
-        else:
-            # Assume already in reasonable units
-            target_range_km = suggested_range_meters
+        suggested_range_coord_units = scale_diag['suggestions']['spatial_range_suggestion']
+        # Convert to km based on coordinate units
+        unit_to_km = proj_info.get('unit_to_km', 1.0)
+        target_range_km = suggested_range_coord_units * unit_to_km
         if verbose:
             print(f"Auto-selected correlation range: {target_range_km:.1f} km")
     
-    # Convert range to meters for kappa calculation
-    if proj_info.get('coordinate_units') == 'meters':
-        range_meters = target_range_km * 1000
-    else:
-        # If units unknown, use raw value
-        range_meters = target_range_km
+    # Convert range to coordinate units for kappa calculation
+    unit_to_km = proj_info.get('unit_to_km', 1.0)
+    range_coord_units = target_range_km / unit_to_km
     
     # Convert to kappa (for Matérn ν=1/2)
     # kappa = sqrt(8) / range for exponential correlation
-    kappa_mean = np.sqrt(8) / range_meters
+    kappa_mean = np.sqrt(8) / range_coord_units
     kappa_sd = kappa_mean / 3  # Allow variation within factor of 3
     
     # Tau based on desired variance
@@ -212,7 +206,7 @@ def compute_prior_specifications(
     
     priors = {
         'range_km': target_range_km,
-        'range_meters': range_meters if proj_info.get('coordinate_units') == 'meters' else None,
+        'range_coord_units': range_coord_units,
         'kappa_mean': kappa_mean,
         'kappa_sd': kappa_sd,
         'tau_mean': tau_mean,
@@ -224,8 +218,8 @@ def compute_prior_specifications(
     if verbose:
         print(f"\nPrior Specifications:")
         print(f"  Correlation range: {target_range_km:.1f} km")
-        if proj_info.get('coordinate_units') == 'meters':
-            print(f"  Range in coordinate units: {range_meters:.1f} meters")
+        coord_units = proj_info.get('coordinate_units', 'units')
+        print(f"  Range in coordinate units: {range_coord_units:.1f} {coord_units}")
         print(f"  Kappa prior: Normal({kappa_mean:.2e}, {kappa_sd:.2e})")
         print(f"  Tau prior: Normal({tau_mean:.2f}, {tau_sd:.2f})")
     
@@ -258,9 +252,10 @@ def translate_parameters_to_interpretable_units(
     # Convert kappa to range
     range_coord_units = np.sqrt(8) / kappa
     
-    # Convert to km if we know the units
-    if proj_info.get('coordinate_units') == 'meters':
-        range_km = range_coord_units / 1000
+    # Convert to km using the conversion factor
+    unit_to_km = proj_info.get('unit_to_km')
+    if unit_to_km is not None:
+        range_km = range_coord_units * unit_to_km
     else:
         # Can't convert without knowing units
         range_km = None
@@ -310,10 +305,10 @@ def validate_prior_compatibility(
     mesh_edge = mesh_params['max_edge']
     
     # Get range in same units as mesh
-    if 'range_meters' in priors and priors['range_meters'] is not None:
-        range_coord = priors['range_meters']
+    if 'range_coord_units' in priors:
+        range_coord = priors['range_coord_units']
     else:
-        # Try to use kappa to get range
+        # Fallback: use kappa to get range
         range_coord = np.sqrt(8) / priors['kappa_mean']
     
     # Check if mesh is fine enough

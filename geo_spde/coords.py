@@ -326,6 +326,24 @@ def preprocess_coords(coords: np.ndarray,
         proj4_string = "+proj=unknown"
         system_name = "User-provided projection"
     
+    # Check if rescaling to km is needed (for regions > 100 km extent)
+    rescale_factor = 1.0
+    coordinate_units = 'meters'
+    unit_to_km = 0.001
+    
+    if is_geo:
+        # For geographic coordinates that were projected to meters, check if rescaling is needed
+        extent_x = projected_coords[:, 0].max() - projected_coords[:, 0].min()
+        extent_y = projected_coords[:, 1].max() - projected_coords[:, 1].min()
+        max_extent_m = max(extent_x, extent_y)
+        
+        if max_extent_m > 100000:  # 100 km in meters
+            rescale_factor = 0.001  # Convert meters to km
+            projected_coords = projected_coords * rescale_factor
+            coordinate_units = 'kilometers'
+            unit_to_km = 1.0
+            print(f"Rescaled coordinates from meters to km (extent: {max_extent_m/1000:.1f} km)")
+    
     # Handle duplicates based on remove_duplicates flag
     if remove_duplicates:
         clean_coords, kept_indices, n_duplicates = remove_duplicate_coords(
@@ -370,22 +388,22 @@ def preprocess_coords(coords: np.ndarray,
         'hull_diameter_km': hull_diameter_km,
         'antimeridian_crossing': antimeridian_crossing,
         'scale_estimates': scale_estimates,
+        'coordinate_units': coordinate_units,
+        'unit_to_km': unit_to_km,
+        'rescale_factor': rescale_factor,
     }
-    if is_geo:
-        projection_info['coordinate_units'] = 'meters'
-        projection_info['unit_to_km'] = 0.001
-    else:
+    if not is_geo:
         projection_info['coordinate_units'] = 'unknown'
     
     if not remove_duplicates and close_points:
         projection_info['close_points'] = close_points
     
-    print(f"Characteristic spatial scale: {scale_estimates['characteristic_scale']:.3f} {projection_info.get('coordinate_units', 'units')}")
+    print(f"Characteristic spatial scale: {scale_estimates['characteristic_scale']:.3f} {coordinate_units}")
     print(f"Recommended mesh edge length: {scale_estimates['mesh_recommended_edge']:.3f}")
     if remove_duplicates:
         print(f"Coordinate preprocessing complete: {len(coords)} -> {len(clean_coords)} points")
     else:
         print(f"Coordinate preprocessing complete: {len(coords)} points retained")
-    print(f"Projected extent: {x_max - x_min:.0f} × {y_max - y_min:.0f} {projection_info.get('coordinate_units', 'units')}")
+    print(f"Projected extent: {x_max - x_min:.0f} × {y_max - y_min:.0f} {coordinate_units}")
     
     return clean_coords, kept_indices, projection_info
