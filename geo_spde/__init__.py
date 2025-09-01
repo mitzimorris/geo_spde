@@ -1,34 +1,29 @@
 """
-GEO_SPDE: transform geospatial coordinates to spatial adjacency matrices
+GEO_SPDE: Simplified SPDE modeling with automatic PC priors and adaptive mesh
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Mitzi Morris"
 
-# Core coordinate processing
-from .coords import (
-    preprocess_coords,
-    estimate_characteristic_scale,
+# Main simplified API
+from .stan_spde import (
+    StanSPDE,
+    prepare_stan_data_with_priors,
+    suggest_prior_mode,
+    create_prior_report,
 )
 
-# Mesh generation
+# PC Prior utilities
+from .pc_priors import (
+    compute_pc_prior_params,
+    validate_pc_priors,
+    sample_from_pc_prior,
+)
+
+# Core components (for advanced users)
+from .coords import preprocess_coords
 from .mesh import SPDEMesh
-
-# Matrix computation
-from .matrices import (
-    compute_fem_matrices,
-    compute_fem_matrices_scaled,
-    select_reference_parameters,
-    check_precision_conditioning,
-)
-
-# Stan data preparation
-from .stan_data_prep import (
-    prepare_stan_data,
-    validate_prior_compatibility,
-    generate_synthetic_data,
-    create_stan_init
-)
+from .matrices import compute_fem_matrices
 
 # Exceptions
 from .exceptions import (
@@ -36,35 +31,28 @@ from .exceptions import (
     CoordsError,
     MeshError,
     MatrixError,
-    ParameterScaleError,
-    ConditioningError
 )
 
 __all__ = [
-    # Coordinate processing
+    # Main API
+    'StanSPDE',
+    'prepare_stan_data_with_priors',
+    'suggest_prior_mode',
+    'create_prior_report',
+    
+    # PC Priors
+    'compute_pc_prior_params',
+    'validate_pc_priors',
+    'sample_from_pc_prior',
+    
+    # Core components
     'preprocess_coords',
-    'estimate_characteristic_scale',
-    
-    # Mesh generation
     'SPDEMesh',
-    
-    # Matrix computation
     'compute_fem_matrices',
-    'compute_fem_matrices_scaled',
-    'select_reference_parameters',
-    'check_precision_conditioning',
-    
-    # Stan integration
-    'prepare_stan_data',
-    'validate_prior_compatibility',
-    'generate_synthetic_data',
-    'create_stan_init',
     
     # Exceptions
     'GeoSpdeError',
     'CoordsError',
     'MeshError',
     'MatrixError',
-    'ParameterScaleError',
-    'ConditioningError'
 ]
