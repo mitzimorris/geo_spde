@@ -18,6 +18,7 @@ from .mesh import SPDEMesh
 from .matrices import compute_fem_matrices
 from .exceptions import ParameterScaleError
 from .utils import sparse_to_stan_csr
+from .pc_priors import compute_pc_prior_params
 
 PriorMode = Literal["auto", "tight", "medium", "wide", "custom"]
 DomainKnowledge = Literal["environmental", "disease", "economic", "weather", "soil"]
@@ -310,7 +311,16 @@ class StanSPDE:
         
         mode_map = {"auto": 0, "tight": 1, "medium": 2, "wide": 3, "custom": 0}
         
-  
+        # Compute PC prior parameters
+        pc_params = compute_pc_prior_params(
+            estimated_range=estimated_range,
+            data_sd=np.std(y),
+            prior_mode=prior_mode,
+            spatial_fraction=spatial_fraction,
+            mesh_diagnostics=scale_diag,
+            alpha=alpha
+        )
+        
         log_det_Q_base = self._compute_log_det_Q_base(Q_base)
         
         stan_data = {
@@ -343,6 +353,16 @@ class StanSPDE:
             'prior_mode': mode_map[prior_mode],
             'spatial_fraction': spatial_fraction,
             'alpha': alpha,
+            
+            # PC prior parameters
+            'rho_0': pc_params['rho_0'],
+            'alpha_rho': pc_params['alpha_rho'],
+            'lambda_rho': pc_params['lambda_rho'],
+            'kappa_0': pc_params['kappa_0'],
+            'sigma_0': pc_params['sigma_0'],
+            'alpha_sigma': pc_params['alpha_sigma'],
+            'lambda_sigma': pc_params['lambda_sigma'],
+            'estimated_sigma': pc_params['expected_sigma'],
         }
         
         return stan_data
