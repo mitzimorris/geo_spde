@@ -287,8 +287,9 @@ class TestPreprocessCoordsEdgeCases:
         ])
         
         _, _, proj_info_geo = preprocess_coords(geo_coords)
-        assert proj_info_geo['coordinate_units'] == 'meters'
-        assert proj_info_geo['unit_to_km'] == 0.001
+        # Coordinates are rescaled to kilometers for single_region scale
+        assert proj_info_geo['coordinate_units'] == 'kilometers'
+        assert proj_info_geo['unit_to_km'] == 1.0
         
         # Already projected coordinates
         proj_coords = np.array([
@@ -299,7 +300,8 @@ class TestPreprocessCoordsEdgeCases:
         
         _, _, proj_info_proj = preprocess_coords(proj_coords)
         assert proj_info_proj['coordinate_units'] == 'unknown'
-        assert 'unit_to_km' not in proj_info_proj
+        # When scale is inferred as meters, unit_to_km is still provided
+        assert proj_info_proj['unit_to_km'] == 0.001
 
 
 class TestRemoveDuplicatesFalseMode:

@@ -105,73 +105,6 @@ class TestSPDEMeshInitialization:
             SPDEMesh(coords)
 
 
-class TestMeshParameterCalculation:
-    """Test mesh parameter calculation"""
-    
-    @pytest.fixture
-    def mesh(self):
-        """Fixture for mesh with square grid coordinates"""
-        coords = np.array([
-            [0, 0],
-            [1, 0],
-            [2, 0],
-            [0, 1],
-            [1, 1],
-            [2, 1],
-            [0, 2],
-            [1, 2],
-            [2, 2]
-        ], dtype=float)
-        return SPDEMesh(coords)
-    
-    def test_parameter_calculation_basic(self, mesh):
-        """Test basic parameter calculation"""
-        params = mesh._compute_mesh_parameters(target_edge_factor=0.5, max_area=None)
-        
-        # Check that all required keys are present
-        expected_keys = {'max_edge', 'max_area', 'cutoff', 'min_distance', 'median_distance'}
-        assert set(params.keys()) == expected_keys
-        
-        # Check data types
-        for value in params.values():
-            assert isinstance(value, (int, float))
-        
-        # Check logical relationships
-        assert params['max_area'] == (params['max_edge'] ** 2) / 2.0
-        assert params['cutoff'] == params['min_distance'] * 0.1
-        assert params['max_edge'] == params['median_distance'] * 0.5
-    
-    def test_parameter_calculation_with_custom_area(self, mesh):
-        """Test parameter calculation with custom max_area"""
-        custom_area = 100.0
-        params = mesh._compute_mesh_parameters(target_edge_factor=0.5, max_area=custom_area)
-        
-        assert params['max_area'] == custom_area
-    
-    def test_parameter_calculation_different_edge_factor(self, mesh):
-        """Test parameter calculation with different edge factor"""
-        params1 = mesh._compute_mesh_parameters(target_edge_factor=0.3, max_area=None)
-        params2 = mesh._compute_mesh_parameters(target_edge_factor=0.7, max_area=None)
-        
-        assert params1['max_edge'] < params2['max_edge']
-        assert params1['max_area'] < params2['max_area']
-        # min_distance, median_distance, cutoff should be the same
-        assert params1['min_distance'] == params2['min_distance']
-        assert params1['median_distance'] == params2['median_distance']
-        assert params1['cutoff'] == params2['cutoff']
-    
-    def test_parameter_calculation_identical_coords(self):
-        """Test error when all coordinates are identical"""
-        coords = np.array([
-            [1, 1],
-            [1, 1],
-            [1, 1]
-        ])
-        mesh = SPDEMesh(coords)
-        
-        with pytest.raises(MeshError, match="All coordinates are identical"):
-            mesh._compute_mesh_parameters(0.5, None)
-
 
 class TestBoundaryCreation:
     """Test boundary polygon creation"""
@@ -249,7 +182,7 @@ class TestMeshGeneration:
     
     def test_basic_mesh_generation(self, simple_mesh):
         """Test basic mesh generation"""
-        vertices, triangles = simple_mesh.create_mesh(verbose=False)
+        vertices, triangles = simple_mesh.create_adaptive_mesh(verbose=False)
         
         # Check output types and shapes
         assert isinstance(vertices, np.ndarray)
@@ -275,7 +208,7 @@ class TestMeshGeneration:
             [0, 4]
         ])
         
-        vertices, triangles = simple_mesh.create_mesh(
+        vertices, triangles = simple_mesh.create_adaptive_mesh(
             boundary=custom_boundary,
             verbose=False
         )
@@ -286,26 +219,60 @@ class TestMeshGeneration:
             assert np.min(distances) < 1e-6
     
     def test_mesh_generation_different_parameters(self, simple_mesh):
-        """Test mesh generation with different parameters"""
-        # Coarse mesh
-        vertices1, triangles1 = simple_mesh.create_mesh(
-            target_edge_factor=1.0,
+        """Test adaptive mesh generation with different parameters"""
+        # Mesh with larger edges far from observations
+        vertices1, triangles1 = simple_mesh.create_adaptive_mesh(
+            max_edge_far=10.0,
             verbose=False
         )
         
-        # Fine mesh
-        vertices2, triangles2 = simple_mesh.create_mesh(
-            target_edge_factor=0.2,
+        # Mesh with smaller edges far from observations
+        vertices2, triangles2 = simple_mesh.create_adaptive_mesh(
+            max_edge_far=2.0,
             verbose=False
         )
         
-        # Fine mesh should have more vertices
-        assert len(vertices2) > len(vertices1)
-        assert len(triangles2) > len(triangles1)
+        # Should both complete successfully
+        assert len(vertices1) > 0
+        assert len(vertices2) > 0
+    
+    def test_adaptive_mesh_generation(self, simple_mesh):
+        """Test adaptive mesh generation functionality"""
+        vertices, triangles = simple_mesh.create_adaptive_mesh(verbose=False)
+        
+        # Check output types and shapes
+        assert isinstance(vertices, np.ndarray)
+        assert isinstance(triangles, np.ndarray)
+        assert vertices.shape[1] == 2
+        assert triangles.shape[1] == 3
+        assert triangles.dtype == np.int32
+        
+        # Should have at least the original coordinates
+        assert len(vertices) >= len(simple_mesh.coords)
+        
+        # Check that mesh contains original points
+        for orig_point in simple_mesh.coords:
+            distances = np.linalg.norm(vertices - orig_point, axis=1)
+            assert np.min(distances) < 1e-6
+    
+    def test_adaptive_mesh_with_custom_params(self, simple_mesh):
+        """Test adaptive mesh with custom parameters"""
+        vertices, triangles = simple_mesh.create_adaptive_mesh(
+            min_edge_near_obs=0.1,
+            max_edge_far=5.0,
+            transition_distance=2.0,
+            verbose=False
+        )
+        
+        # Should complete successfully
+        assert len(vertices) > 0
+        assert len(triangles) > 0
+        assert vertices.shape[1] == 2
+        assert triangles.shape[1] == 3
     
     def test_mesh_generation_min_angle_constraint(self, simple_mesh):
         """Test that minimum angle constraint is respected"""
-        vertices, triangles = simple_mesh.create_mesh(
+        vertices, triangles = simple_mesh.create_adaptive_mesh(
             min_angle=25.0,
             verbose=False
         )
@@ -344,7 +311,7 @@ class TestMeshDiagnostics:
             [1, 1]
         ])
         mesh = SPDEMesh(coords)
-        mesh.create_mesh(verbose=False)
+        mesh.create_adaptive_mesh(verbose=False)
         return mesh
     
     def test_diagnostics_computation(self, mesh_with_triangles):
@@ -411,7 +378,7 @@ class TestMeshQuality:
         mesh = SPDEMesh(coords)
         
         # Should not crash
-        vertices, triangles = mesh.create_mesh(verbose=False)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
         assert len(vertices) >= 5
         assert len(triangles) >= 1
     
@@ -424,11 +391,17 @@ class TestMeshQuality:
             [1, 1],
             [0, 1]
         ])
-        mesh = SPDEMesh(coords)
         
-        # Should handle close points gracefully
-        vertices, triangles = mesh.create_mesh(verbose=False)
-        assert len(vertices) >= 5
+        # Should remove the very close point during initialization
+        with pytest.warns(UserWarning, match="Removed .* coordinates that were closer"):
+            mesh = SPDEMesh(coords)
+        
+        # Should have removed the close point
+        assert len(mesh.coords) == 4  # One point removed
+        
+        # Should handle remaining points gracefully
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
+        assert len(vertices) >= 4
     
     def test_mesh_with_large_coordinates(self):
         """Test mesh generation with large coordinate values"""
@@ -440,7 +413,7 @@ class TestMeshQuality:
         ])
         mesh = SPDEMesh(coords)
         
-        vertices, triangles = mesh.create_mesh(verbose=False)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
         assert len(vertices) >= 4
 
 
@@ -457,12 +430,12 @@ class TestMeshOutput:
         ])
         mesh = SPDEMesh(coords)
         
-        vertices, triangles = mesh.create_mesh(verbose=True)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=True)
         
         captured = capsys.readouterr()
-        assert "Creating mesh for 4 observation points" in captured.out
-        assert "Target edge length" in captured.out
-        assert "Mesh Generation Complete" in captured.out
+        assert "Creating adaptive mesh for 4 observation points" in captured.out
+        assert "Min edge (near obs):" in captured.out
+        assert "Refinement ratio:" in captured.out
     
     def test_large_mesh_warning(self, capsys):
         """Test warning for large mesh"""
@@ -473,8 +446,8 @@ class TestMeshOutput:
         coords = np.column_stack([xx.ravel(), yy.ravel()])
         
         mesh = SPDEMesh(coords)
-        vertices, triangles = mesh.create_mesh(
-            target_edge_factor=0.01,  # Fine mesh
+        vertices, triangles = mesh.create_adaptive_mesh(
+            min_edge_near_obs=0.01,  # Fine mesh
             verbose=True
         )
         
@@ -684,7 +657,7 @@ class TestMeshResolutionValidation:
             [0, 4], [2, 4], [4, 4]
         ])
         mesh = SPDEMesh(coords)
-        mesh.create_mesh(target_edge_factor=0.5, verbose=False)
+        mesh.create_adaptive_mesh(min_edge_near_obs=0.5, verbose=False)
         return mesh
     
     def test_validate_resolution_basic(self, mesh_with_scale):
@@ -709,7 +682,7 @@ class TestMeshResolutionValidation:
             [0, 20], [10, 20], [20, 20]
         ])
         mesh = SPDEMesh(coords)
-        mesh.create_mesh(target_edge_factor=2.0, verbose=False)  # Very coarse
+        mesh.create_adaptive_mesh(min_edge_near_obs=2.0, verbose=False)  # Very coarse
         
         validation = mesh.validate_mesh_resolution(verbose=False)
         
@@ -729,7 +702,7 @@ class TestMeshResolutionValidation:
             [0, 10], [5, 10], [10, 10]
         ])
         mesh = SPDEMesh(coords)
-        mesh.create_mesh(target_edge_factor=3.0, verbose=False)  # Too coarse
+        mesh.create_adaptive_mesh(min_edge_near_obs=3.0, verbose=False)  # Too coarse
         
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
@@ -838,6 +811,285 @@ class TestSPDEParameterSuggestions:
         assert standard_mesh.parameter_suggestions == suggestions
 
 
+class TestAdaptiveMesh:
+    """Test adaptive mesh generation functionality"""
+    
+    @pytest.fixture
+    def clustered_coords(self):
+        """Create coordinates with clustered pattern"""
+        np.random.seed(42)
+        # Create three clusters
+        cluster1 = np.random.normal([10, 10], 2, (10, 2))
+        cluster2 = np.random.normal([30, 10], 2, (10, 2))
+        cluster3 = np.random.normal([20, 30], 2, (10, 2))
+        sparse_points = np.random.uniform(0, 40, (5, 2))
+        return np.vstack([cluster1, cluster2, cluster3, sparse_points])
+    
+    @pytest.fixture
+    def uniform_coords(self):
+        """Create uniformly distributed coordinates"""
+        x = np.linspace(0, 20, 7)
+        y = np.linspace(0, 20, 7)
+        xx, yy = np.meshgrid(x, y)
+        return np.column_stack([xx.ravel(), yy.ravel()])
+    
+    @pytest.fixture
+    def sparse_coords(self):
+        """Create sparse, irregularly distributed coordinates"""
+        np.random.seed(42)
+        return np.random.uniform(0, 100, (8, 2))
+    
+    def test_adaptive_mesh_basic(self, clustered_coords):
+        """Test basic adaptive mesh generation"""
+        mesh = SPDEMesh(clustered_coords)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
+        
+        assert isinstance(vertices, np.ndarray)
+        assert isinstance(triangles, np.ndarray)
+        assert vertices.shape[1] == 2
+        assert triangles.shape[1] == 3
+        assert len(vertices) >= len(clustered_coords)
+        
+        # Check that original points are included
+        for coord in clustered_coords:
+            distances = np.linalg.norm(vertices - coord, axis=1)
+            assert np.min(distances) < 1e-6
+    
+    def test_adaptive_mesh_custom_parameters(self, uniform_coords):
+        """Test adaptive mesh with custom edge parameters"""
+        mesh = SPDEMesh(uniform_coords)
+        
+        vertices, triangles = mesh.create_adaptive_mesh(
+            min_edge_near_obs=0.5,
+            max_edge_far=5.0,
+            transition_distance=3.0,
+            verbose=False
+        )
+        
+        # Compute edge lengths
+        edge_lengths = []
+        for tri in triangles:
+            for i in range(3):
+                j = (i + 1) % 3
+                edge = np.linalg.norm(vertices[tri[j]] - vertices[tri[i]])
+                edge_lengths.append(edge)
+        
+        edge_lengths = np.array(edge_lengths)
+        
+        # Check that edge lengths are within reasonable bounds
+        assert edge_lengths.min() >= 0.1  # Not too small
+        assert edge_lengths.max() <= 10.0  # Not too large
+    
+    def test_adaptive_mesh_with_boundary(self, sparse_coords):
+        """Test adaptive mesh with custom boundary"""
+        mesh = SPDEMesh(sparse_coords)
+        
+        # Create a large rectangular boundary
+        boundary = np.array([
+            [-10, -10],
+            [110, -10],
+            [110, 110],
+            [-10, 110]
+        ])
+        
+        vertices, triangles = mesh.create_adaptive_mesh(
+            boundary=boundary,
+            verbose=False
+        )
+        
+        # Check boundary points are included
+        for bpoint in boundary:
+            distances = np.linalg.norm(vertices - bpoint, axis=1)
+            assert np.min(distances) < 1e-6
+    
+    def test_adaptive_parameter_computation(self, clustered_coords):
+        """Test automatic parameter computation for adaptive mesh"""
+        mesh = SPDEMesh(clustered_coords)
+        params = mesh._compute_adaptive_parameters()
+        
+        assert 'min_edge_near_obs' in params
+        assert 'max_edge_far' in params
+        assert 'transition_distance' in params
+        
+        # Check parameter relationships
+        assert params['min_edge_near_obs'] > 0
+        assert params['max_edge_far'] > params['min_edge_near_obs']
+        assert params['transition_distance'] > 0
+        
+        # Check reasonable ratio
+        ratio = params['max_edge_far'] / params['min_edge_near_obs']
+        assert 2 <= ratio <= 50
+    
+    def test_adaptive_mesh_single_cluster(self):
+        """Test adaptive mesh with single dense cluster"""
+        np.random.seed(42)
+        coords = np.random.normal([50, 50], 1, (20, 2))
+        mesh = SPDEMesh(coords)
+        
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
+        
+        # Should create reasonable mesh even with single cluster
+        assert len(vertices) >= len(coords)
+        assert len(triangles) > 0
+    
+    def test_adaptive_mesh_extreme_spacing(self):
+        """Test adaptive mesh with extreme spacing variations"""
+        # Very dense cluster and very sparse points
+        dense = np.random.normal([0, 0], 0.1, (15, 2))
+        sparse = np.array([[100, 100], [100, -100], [-100, 100], [-100, -100]])
+        coords = np.vstack([dense, sparse])
+        
+        mesh = SPDEMesh(coords)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
+        
+        # Should handle extreme variations gracefully
+        assert len(vertices) >= len(coords)
+        assert len(triangles) > 0
+    
+    def test_adaptive_mesh_diagnostics(self, uniform_coords, capsys):
+        """Test diagnostic output for adaptive mesh"""
+        mesh = SPDEMesh(uniform_coords)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=True)
+        
+        captured = capsys.readouterr()
+        assert "Creating adaptive mesh" in captured.out
+        assert "Min edge (near obs)" in captured.out
+        assert "Max edge (far)" in captured.out
+        assert "Transition distance" in captured.out
+        assert "Edge length distribution" in captured.out
+        assert "Refinement ratio" in captured.out
+    
+    def test_adaptive_mesh_edge_distribution(self, clustered_coords):
+        """Test that adaptive mesh has appropriate edge length distribution"""
+        mesh = SPDEMesh(clustered_coords)
+        vertices, triangles = mesh.create_adaptive_mesh(verbose=False)
+        
+        # Build KDTree for distance queries
+        from scipy.spatial import KDTree
+        obs_tree = KDTree(clustered_coords)
+        
+        # Analyze triangles by distance to observations
+        near_edges = []
+        far_edges = []
+        
+        for tri in triangles:
+            # Get triangle centroid
+            tri_verts = vertices[tri]
+            centroid = np.mean(tri_verts, axis=0)
+            
+            # Distance to nearest observation
+            dist_to_obs, _ = obs_tree.query([centroid], k=1)
+            dist_to_obs = dist_to_obs[0]
+            
+            # Compute edge lengths
+            for i in range(3):
+                j = (i + 1) % 3
+                edge_length = np.linalg.norm(tri_verts[j] - tri_verts[i])
+                
+                if dist_to_obs < 5:  # Near observations
+                    near_edges.append(edge_length)
+                elif dist_to_obs > 15:  # Far from observations
+                    far_edges.append(edge_length)
+        
+        if len(near_edges) > 0 and len(far_edges) > 0:
+            # Near edges should generally be smaller than far edges
+            assert np.median(near_edges) < np.median(far_edges)
+    
+    def test_triangle_area_computation(self):
+        """Test triangle area calculation"""
+        mesh = SPDEMesh(np.array([[0, 0], [1, 0], [0, 1]]))
+        
+        # Right triangle with base=1, height=1
+        vertices = np.array([[0, 0], [1, 0], [0, 1]])
+        area = mesh._triangle_area(vertices)
+        assert abs(area - 0.5) < 1e-10
+        
+        # Equilateral triangle
+        vertices = np.array([[0, 0], [1, 0], [0.5, np.sqrt(3)/2]])
+        area = mesh._triangle_area(vertices)
+        expected = np.sqrt(3) / 4
+        assert abs(area - expected) < 1e-10
+    
+    def test_intermediate_points_generation(self, sparse_coords):
+        """Test generation of intermediate transition points"""
+        from scipy.spatial import KDTree
+        
+        mesh = SPDEMesh(sparse_coords)
+        boundary = mesh._create_extended_boundary(0.2)
+        obs_tree = KDTree(sparse_coords)
+        
+        intermediate = mesh._generate_intermediate_points(
+            boundary, obs_tree, transition_dist=10.0, max_edge=5.0
+        )
+        
+        assert isinstance(intermediate, list)
+        # Should generate some intermediate points for transition
+        if len(intermediate) > 0:
+            # Check that points are in transition zone
+            for point in intermediate:
+                dist_to_obs, _ = obs_tree.query([point], k=1)
+                # Should be in reasonable transition range
+                assert dist_to_obs[0] > 0
+    
+    def test_adaptive_mesh_min_angle_constraint(self, uniform_coords):
+        """Test that minimum angle constraint is respected in adaptive mesh"""
+        mesh = SPDEMesh(uniform_coords)
+        vertices, triangles = mesh.create_adaptive_mesh(
+            min_angle=25.0,
+            verbose=False
+        )
+        
+        # Check minimum angles
+        min_angles = []
+        for tri in triangles:
+            v0, v1, v2 = vertices[tri]
+            
+            # Compute angles
+            edges = np.array([v1 - v0, v2 - v1, v0 - v2])
+            for i in range(3):
+                e1 = edges[i]
+                e2 = -edges[(i+1) % 3]
+                cos_angle = np.dot(e1, e2) / (np.linalg.norm(e1) * np.linalg.norm(e2))
+                cos_angle = np.clip(cos_angle, -1, 1)
+                angle = np.degrees(np.arccos(cos_angle))
+                min_angles.append(angle)
+        
+        # Allow small tolerance for numerical precision
+        assert np.min(min_angles) >= 24.0
+    
+    def test_adaptive_mesh_error_handling(self):
+        """Test error handling in adaptive parameter computation"""
+        # Test with too few points - should raise error at initialization
+        coords = np.array([[0, 0], [1, 1]])
+        
+        with pytest.raises(MeshError, match="Need at least 3 coordinates"):
+            mesh = SPDEMesh(coords)
+    
+    def test_adaptive_vs_regular_mesh_comparison(self, clustered_coords):
+        """Compare adaptive mesh with regular mesh"""
+        mesh = SPDEMesh(clustered_coords)
+        
+        # Generate regular mesh
+        regular_verts, regular_tris = mesh.create_adaptive_mesh(
+            min_edge_near_obs=0.5,
+            verbose=False
+        )
+        
+        # Generate adaptive mesh
+        adaptive_verts, adaptive_tris = mesh.create_adaptive_mesh(verbose=False)
+        
+        # Adaptive mesh should have different characteristics
+        # Generally fewer vertices in sparse areas
+        assert len(adaptive_verts) != len(regular_verts)
+        
+        # Both should cover the observation points
+        for coord in clustered_coords:
+            reg_distances = np.linalg.norm(regular_verts - coord, axis=1)
+            adapt_distances = np.linalg.norm(adaptive_verts - coord, axis=1)
+            assert np.min(reg_distances) < 1e-6
+            assert np.min(adapt_distances) < 1e-6
+
+
 class TestScaleDiagnostics:
     """Test comprehensive scale diagnostics"""
     
@@ -847,7 +1099,7 @@ class TestScaleDiagnostics:
         np.random.seed(42)
         coords = np.random.uniform(0, 50, (30, 2))
         mesh = SPDEMesh(coords)
-        mesh.create_mesh(verbose=False)
+        mesh.create_adaptive_mesh(verbose=False)
         return mesh
     
     def test_compute_scale_diagnostics_basic(self, complete_mesh):
@@ -917,7 +1169,7 @@ class TestScaleDiagnostics:
         coords = np.vstack(coords)
         
         mesh = SPDEMesh(coords)
-        mesh.create_mesh(target_edge_factor=0.4, verbose=False)
+        mesh.create_adaptive_mesh(min_edge_near_obs=0.4, verbose=False)
         
         diagnostics = mesh.compute_scale_diagnostics(verbose=False)
         

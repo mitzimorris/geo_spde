@@ -8,9 +8,9 @@ __author__ = "Mitzi Morris"
 # Main simplified API
 from .stan_spde import (
     StanSPDE,
-    prepare_stan_data_with_priors,
-    suggest_prior_mode,
-    create_prior_report,
+    sparse_to_stan_csr,
+    PriorMode,
+    DomainKnowledge,
 )
 
 # PC Prior utilities
@@ -36,9 +36,9 @@ from .exceptions import (
 __all__ = [
     # Main API
     'StanSPDE',
-    'prepare_stan_data_with_priors',
-    'suggest_prior_mode',
-    'create_prior_report',
+    'sparse_to_stan_csr',
+    'PriorMode', 
+    'DomainKnowledge',
     
     # PC Priors
     'compute_pc_prior_params',

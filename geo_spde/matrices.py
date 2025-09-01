@@ -363,6 +363,45 @@ def _compute_stiffness_matrix_vectorized(vertices: np.ndarray, triangles: np.nda
     return G
 
 
+def _point_in_triangle(point: np.ndarray, triangle_vertices: np.ndarray) -> bool:
+    """
+    Test if a point is inside a triangle using barycentric coordinates.
+    
+    Parameters
+    ----------
+    point : np.ndarray
+        Point coordinates (x, y)
+    triangle_vertices : np.ndarray
+        Triangle vertex coordinates, shape (3, 2)
+        
+    Returns
+    -------
+    bool
+        True if point is inside triangle
+    """
+    v0, v1, v2 = triangle_vertices
+    
+    # Vectors from v0 to other vertices and to point
+    v0v1 = v1 - v0
+    v0v2 = v2 - v0
+    v0p = point - v0
+    
+    # Dot products
+    dot00 = np.dot(v0v2, v0v2)
+    dot01 = np.dot(v0v2, v0v1)
+    dot02 = np.dot(v0v2, v0p)
+    dot11 = np.dot(v0v1, v0v1)
+    dot12 = np.dot(v0v1, v0p)
+    
+    # Barycentric coordinates
+    inv_denom = 1.0 / (dot00 * dot11 - dot01 * dot01)
+    u = (dot11 * dot02 - dot01 * dot12) * inv_denom
+    v = (dot00 * dot12 - dot01 * dot02) * inv_denom
+    
+    # Check if point is inside triangle
+    return (u >= -1e-10) and (v >= -1e-10) and (u + v <= 1 + 1e-10)
+
+
 def _compute_projector_matrix_vectorized(
     vertices: np.ndarray, 
     triangles: np.ndarray, 
@@ -390,17 +429,25 @@ def _compute_projector_matrix_vectorized(
     n_obs = len(obs_coords)
     n_vertices = len(vertices)
     
-    # Point location using Delaunay triangulation
-    tri_finder = Delaunay(vertices)
-    simplex_indices = tri_finder.find_simplex(obs_coords)
+    # Point location within existing triangulation
+    # We need to find which of our mesh triangles contains each observation point
+    simplex_indices = np.full(n_obs, -1, dtype=int)
     
-    # Handle points outside convex hull using KDTree
+    for i, point in enumerate(obs_coords):
+        # Check each triangle to see if point is inside
+        for j, tri_indices in enumerate(triangles):
+            tri_vertices = vertices[tri_indices]
+            if _point_in_triangle(point, tri_vertices):
+                simplex_indices[i] = j
+                break
+    
+    # Handle points outside any triangle using nearest triangle centroid
     outside_mask = simplex_indices == -1
     n_outside = np.sum(outside_mask)
     
     if n_outside > 0:
         if n_outside > 0.1 * n_obs:  # Warn if many points outside
-            warnings.warn(f"{n_outside} observation points outside mesh convex hull")
+            warnings.warn(f"{n_outside} observation points outside mesh")
         
         # Use KDTree to find nearest triangle centroids
         centroids = np.mean(vertices[triangles], axis=1)

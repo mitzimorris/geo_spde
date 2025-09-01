@@ -37,18 +37,15 @@ def pc_prior_range(
     # For nu=3/2 (alpha=2): sqrt(8*1.5) = sqrt(12)
     
     if alpha == 1:
-        scale_factor = 2.0  # sqrt(8 * 0.5)
+        scale_factor = 2.0
     elif alpha == 2:
-        scale_factor = np.sqrt(12)  # sqrt(8 * 1.5)
+        scale_factor = np.sqrt(12)
     else:
         raise ValueError(f"Unsupported alpha value: {alpha}")
     
-    # Convert range to kappa
     kappa_0 = scale_factor / rho_0
-    
-    # PC prior rate parameter
     lambda_rho = -np.log(alpha_rho) / rho_0
-    
+
     return {
         'lambda_rho': lambda_rho,
         'kappa_0': kappa_0,
@@ -75,9 +72,8 @@ def pc_prior_variance(
     
     :returns: Dict with lambda_sigma (rate parameter), sigma_0 (reference value), prior_params
     """
-    # PC prior rate parameter
     lambda_sigma = -np.log(alpha_sigma) / sigma_0
-    
+
     return {
         'lambda_sigma': lambda_sigma,
         'sigma_0': sigma_0,
@@ -109,7 +105,6 @@ def compute_pc_prior_params(
     median_distance = mesh_diagnostics['spatial_scale']['median_distance']
     mesh_extent = mesh_diagnostics['suggestions']['mesh_extent']
     
-    # Set PC prior parameters based on mode
     if prior_mode == "auto":
         rho_0 = estimated_range
         alpha_rho = 0.5
@@ -117,43 +112,34 @@ def compute_pc_prior_params(
         alpha_sigma = 0.05
         
     elif prior_mode == "tight":
-        # Strong spatial structure expected
         rho_0 = min_distance * 10
-        alpha_rho = 0.9  # 90% prob range < rho_0
+        alpha_rho = 0.9
         sigma_0 = data_sd * 0.3
-        alpha_sigma = 0.01  # 1% prob sigma > sigma_0
+        alpha_sigma = 0.01
         
     elif prior_mode == "medium":
-        # Moderate spatial structure
         rho_0 = median_distance * 3
         alpha_rho = 0.5
         sigma_0 = data_sd * 0.5
         alpha_sigma = 0.05
         
     else:  # wide
-        # Weak spatial structure
         rho_0 = mesh_extent * 0.3
-        alpha_rho = 0.1  # 10% prob range < rho_0
+        alpha_rho = 0.1
         sigma_0 = data_sd * 0.7
-        alpha_sigma = 0.1  # 10% prob sigma > sigma_0
+        alpha_sigma = 0.1
     
-    # Compute PC prior parameters
     range_prior = pc_prior_range(rho_0, alpha_rho, alpha)
     variance_prior = pc_prior_variance(sigma_0, alpha_sigma)
     
     return {
-        # Range prior parameters
         'rho_0': rho_0,
         'alpha_rho': alpha_rho,
         'lambda_rho': range_prior['lambda_rho'],
         'kappa_0': range_prior['kappa_0'],
-        
-        # Variance prior parameters
         'sigma_0': sigma_0,
         'alpha_sigma': alpha_sigma,
         'lambda_sigma': variance_prior['lambda_sigma'],
-        
-        # Derived quantities for reporting
         'expected_range': rho_0 / (1 - alpha_rho),  # Approximate median
         'expected_sigma': sigma_0 * (-np.log(0.5) / -np.log(alpha_sigma))  # Median
     }
@@ -179,7 +165,6 @@ def validate_pc_priors(
         'mesh_adequate': True
     }
     
-    # Check if prior range is compatible with mesh resolution
     min_edge = mesh_diagnostics['edge_lengths']['min']
     max_edge = mesh_diagnostics['edge_lengths']['max']
     
@@ -195,7 +180,6 @@ def validate_pc_priors(
             print(f"WARNING: Prior range ({pc_params['rho_0']:.2f}) much larger than "
                   f"mesh extent - consider wider mesh")
     
-    # Check variance prior reasonableness
     if pc_params['sigma_0'] < 1e-6:
         validation['variance_reasonable'] = False
         if verbose:
@@ -259,24 +243,18 @@ def sample_from_pc_prior(
     
     :returns: Samples from prior distributions
     """
-    # Sample range (using exponential approximation)
     lambda_rho = pc_params['lambda_rho']
     range_samples = expon.rvs(scale=1/lambda_rho, size=n_samples)
     
-    # Sample standard deviation
     lambda_sigma = pc_params['lambda_sigma']
     sigma_samples = expon.rvs(scale=1/lambda_sigma, size=n_samples)
     
-    # Convert range to kappa
     if alpha == 1:
         scale_factor = 2.0  # sqrt(8 * 0.5) for Matern nu=1/2
     else:
         scale_factor = np.sqrt(12)  # sqrt(8 * 1.5) for Matern nu=3/2
     
     kappa_samples = scale_factor / range_samples
-    
-    # Sample tau (marginal variance parameter)
-    # tau ~ Gamma shape to match variance
     tau_samples = gamma.rvs(a=1, scale=1/lambda_sigma, size=n_samples)
     
     return {

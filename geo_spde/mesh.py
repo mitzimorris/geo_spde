@@ -68,6 +68,15 @@ class SPDEMesh:
                 f"Need at least 3 coordinates for mesh generation, got {len(coords)}"
             )
         
+        # Check for and remove very close coordinates that cause mesh generation issues
+        coords = self._remove_very_close_coords(coords)
+        
+        if len(coords) < 3:
+            raise MeshError(
+                f"After removing very close coordinates, only {len(coords)} remain. "
+                "Need at least 3 coordinates for mesh generation."
+            )
+        
         self.coords = coords
         self.projection_info = projection_info or {}
         self.mesh_params = None
@@ -75,207 +84,6 @@ class SPDEMesh:
         self.triangles = None
         self.diagnostics = None
         
-    def create_mesh(
-        self,
-        boundary: Optional[np.ndarray] = None,
-        extension_factor: float = 0.2,
-        target_edge_factor: float = 0.5,
-        min_angle: float = 20.0,
-        max_area: Optional[float] = None,
-        verbose: bool = True
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Generate triangular mesh with data-adaptive parameters.
-        
-        Parameters
-        ----------
-        boundary : np.ndarray, optional
-            Custom boundary polygon. If None, creates extended convex hull
-        extension_factor : float
-            Factor to extend boundary beyond convex hull (default: 0.2 = 20%)
-        target_edge_factor : float
-            Target edge length as fraction of median observation distance
-        min_angle : float
-            Minimum angle constraint in degrees (default: 20)
-        max_area : float, optional
-            Maximum triangle area. If None, computed automatically
-        verbose : bool
-            Print mesh generation progress and diagnostics
-            
-        Returns
-        -------
-        vertices : np.ndarray
-            Mesh vertex coordinates of shape (n_mesh, 2)
-        triangles : np.ndarray
-            Triangle connectivity of shape (n_tri, 3)
-        """
-        if verbose:
-            print(f"Creating mesh for {len(self.coords)} observation points...")
-        
-        # Step 1: Compute adaptive parameters
-        self.mesh_params = self._compute_mesh_parameters(
-            target_edge_factor, max_area
-        )
-        
-        if verbose:
-            print(f"  Target edge length: {self.mesh_params['max_edge']:.1f} units")
-            print(f"  Cutoff distance: {self.mesh_params['cutoff']:.3f} units")
-        
-        # Step 2: Create boundary
-        if boundary is None:
-            boundary = self._create_extended_boundary(extension_factor)
-            if verbose:
-                print(f"  Created extended boundary ({extension_factor*100:.0f}% buffer)")
-        
-        # Step 3: Generate mesh
-        self.vertices, self.triangles = self._generate_basic_mesh(
-            boundary, min_angle, self.mesh_params['max_area']
-        )
-        
-        # Step 4: Compute diagnostics
-        self.diagnostics = self._compute_mesh_diagnostics()
-        
-        if verbose:
-            self._print_diagnostics()
-        
-        return self.vertices, self.triangles
-    
-    def _compute_mesh_parameters(
-        self,
-        target_edge_factor: float,
-        max_area: Optional[float]
-    ) -> Dict[str, float]:
-        """
-        Compute data-adaptive mesh parameters based on observation density.
-        
-        Parameters
-        ----------
-        target_edge_factor : float
-            Target edge length as fraction of median observation distance
-        max_area : float, optional
-            Override automatic area calculation
-            
-        Returns
-        -------
-        Dict with keys:
-            - max_edge: Maximum edge length
-            - max_area: Maximum triangle area
-            - cutoff: Minimum distance threshold
-            - min_distance: Minimum observation distance
-            - median_distance: Median observation distance
-        """
-        # Compute pairwise distances
-        distances = pdist(self.coords)
-        distances_nonzero = distances[distances > 0]
-        
-        if len(distances_nonzero) == 0:
-            raise MeshError("All coordinates are identical")
-        
-        min_distance = np.min(distances_nonzero)
-        median_distance = np.median(distances_nonzero)
-        
-        # Data-adaptive parameters
-        max_edge = median_distance * target_edge_factor
-        
-        if max_area is None:
-            max_area = (max_edge ** 2) / 2.0
-        
-        # Cutoff should be smaller than minimum observation distance
-        cutoff = min_distance * 0.1
-        
-        return {
-            'max_edge': max_edge,
-            'max_area': max_area,
-            'cutoff': cutoff,
-            'min_distance': min_distance,
-            'median_distance': median_distance
-        }
-    
-    def _create_extended_boundary(self, extension_factor: float) -> np.ndarray:
-        """
-        Create extended boundary polygon from convex hull.
-        
-        Parameters
-        ----------
-        extension_factor : float
-            Factor to extend boundary beyond convex hull
-            
-        Returns
-        -------
-        np.ndarray
-            Extended boundary points
-        """
-        # Compute convex hull
-        hull = ConvexHull(self.coords)
-        hull_points = self.coords[hull.vertices]
-        
-        # Compute centroid
-        centroid = np.mean(hull_points, axis=0)
-        
-        # Extend points outward from centroid
-        extended_points = centroid + (hull_points - centroid) * (1 + extension_factor)
-        
-        return extended_points
-    
-    def _generate_basic_mesh(
-        self,
-        boundary: np.ndarray,
-        min_angle: float,
-        max_area: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Generate triangular mesh using MeshPy.
-        
-        Parameters
-        ----------
-        boundary : np.ndarray
-            Boundary polygon points
-        min_angle : float
-            Minimum angle constraint in degrees
-        max_area : float
-            Maximum triangle area
-            
-        Returns
-        -------
-        vertices : np.ndarray
-            Mesh vertices
-        triangles : np.ndarray
-            Triangle connectivity
-        """
-        # Set up MeshPy mesh info
-        mesh_info = triangle.MeshInfo()
-        
-        # Combine observation points and boundary points
-        points_list = self.coords.tolist()
-        boundary_list = boundary.tolist()
-        all_points = points_list + boundary_list
-        
-        # Set all points at once
-        mesh_info.set_points(all_points)
-        
-        # Create boundary facets (segments)
-        n_boundary = len(boundary)
-        offset = len(points_list)  # Boundary points start after observation points
-        facets = []
-        for i in range(n_boundary):
-            facets.append([offset + i, offset + ((i + 1) % n_boundary)])
-        mesh_info.set_facets(facets)
-        
-        # Build mesh with quality constraints
-        mesh = triangle.build(
-            mesh_info,
-            min_angle=min_angle,
-            max_volume=max_area,
-            attributes=False,
-            generate_faces=False
-        )
-        
-        # Extract vertices and triangles
-        vertices = np.array(mesh.points)
-        triangles = np.array(mesh.elements, dtype=np.int32)
-        
-        return vertices, triangles
-    
     def _compute_mesh_diagnostics(self) -> Dict:
         """
         Compute user-interpretable mesh diagnostics.
@@ -346,6 +154,60 @@ class SPDEMesh:
         if d['mesh_to_obs_ratio'] > 10:
             print("  WARNING: High mesh/observation ratio - consider coarser mesh")
     
+    def _create_extended_boundary(self, extension_factor: float) -> np.ndarray:
+        """
+        Create extended boundary polygon from convex hull.
+        
+        :param extension_factor: Factor to extend boundary beyond convex hull
+        :return: Extended boundary points
+        """
+        # Compute convex hull
+        hull = ConvexHull(self.coords)
+        hull_points = self.coords[hull.vertices]
+        
+        # Compute centroid
+        centroid = np.mean(hull_points, axis=0)
+        
+        # Extend points outward from centroid
+        extended_points = centroid + (hull_points - centroid) * (1 + extension_factor)
+        
+        return extended_points
+    
+    def _remove_very_close_coords(self, coords: np.ndarray, min_distance: float = 1e-4) -> np.ndarray:
+        """
+        Remove coordinates that are very close together to prevent mesh generation issues.
+        
+        :param coords: Input coordinates
+        :param min_distance: Minimum allowed distance between points
+        :return: Filtered coordinates
+        """
+        if len(coords) <= 1:
+            return coords
+        
+        # Use a simple approach: keep first occurrence, remove subsequent close points
+        from scipy.spatial.distance import cdist
+        
+        keep_indices = [0]  # Always keep the first point
+        
+        for i in range(1, len(coords)):
+            # Check distance to all previously kept points
+            distances = cdist([coords[i]], coords[keep_indices])
+            min_dist = np.min(distances)
+            
+            if min_dist >= min_distance:
+                keep_indices.append(i)
+        
+        filtered_coords = coords[keep_indices]
+        
+        if len(filtered_coords) < len(coords):
+            warnings.warn(
+                f"Removed {len(coords) - len(filtered_coords)} coordinates that were "
+                f"closer than {min_distance:.1e} units to avoid mesh generation issues.",
+                UserWarning
+            )
+        
+        return filtered_coords
+    
     def get_mesh_info(self) -> Dict:
         """
         Get comprehensive mesh information.
@@ -355,7 +217,7 @@ class SPDEMesh:
         Dict containing mesh parameters, diagnostics, and metadata
         """
         if self.vertices is None:
-            raise MeshError("Mesh not yet generated. Call create_mesh() first.")
+            raise MeshError("Mesh not yet generated. Call create_adaptive_mesh() first.")
         
         return {
             'mesh_params': self.mesh_params,
@@ -515,7 +377,7 @@ class SPDEMesh:
         :return: Dict with validation results: resolution_ok, extent_ok, edge_to_range_ratio, recommended_edge_factor
         """
         if self.mesh_params is None and self.vertices is None:
-            raise MeshError("Mesh parameters not computed. Call create_mesh() first.")
+            raise MeshError("Mesh parameters not computed. Call create_adaptive_mesh() first.")
         
         # For adaptive mesh, compute effective edge length if mesh_params not available
         if self.mesh_params is None and self.vertices is not None:
@@ -748,10 +610,11 @@ class SPDEMesh:
         # Build mesh with spatially varying area constraints
         # Use a simpler approach: generate with fine resolution then simplify
         fine_area = (min_edge ** 2) / 2.0
-        coarse_area = (max_edge ** 2) / 2.0
-        
-        # Build initial mesh with moderate resolution
-        avg_area = (fine_area + coarse_area) / 2.0
+        if max_edge is not None:
+            coarse_area = (max_edge ** 2) / 2.0
+            avg_area = (fine_area + coarse_area) / 2.0
+        else:
+            avg_area = fine_area * 4.0  # Use larger area when max_edge is None
         mesh = triangle.build(
             mesh_info,
             min_angle=min_angle,
@@ -798,8 +661,12 @@ class SPDEMesh:
         
         # Add transition ring points
         n_rings = 3
+        hull_distances = pdist(hull_points)
+        if len(hull_distances) == 0 or transition_dist is None:
+            return intermediate  # No intermediate points needed
+            
         for ring in range(1, n_rings + 1):
-            scale = 1.0 + (ring * transition_dist / np.mean(pdist(hull_points)))
+            scale = 1.0 + (ring * transition_dist / np.mean(hull_distances))
             ring_points = centroid + (hull_points - centroid) * scale
             
             # Filter points that are useful for transition
@@ -902,4 +769,14 @@ class SPDEMesh:
         print(f"    75%: {np.percentile(edge_lengths, 75):.1f}")
         print(f"    Max: {edge_lengths.max():.1f}")
         print(f"  Refinement ratio: {edge_lengths.max() / edge_lengths.min():.1f}x")
+        
+        # Add performance warnings similar to _print_diagnostics
+        n_vertices = len(self.vertices)
+        n_obs = len(self.coords)
+        mesh_to_obs_ratio = n_vertices / n_obs
+        
+        if n_vertices > 5000:
+            print("  WARNING: Large mesh - expect slower Stan sampling")
+        if mesh_to_obs_ratio > 10:
+            print("  WARNING: High mesh/observation ratio - consider coarser mesh")
     
