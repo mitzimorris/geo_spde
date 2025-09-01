@@ -46,16 +46,12 @@ class SPDEMesh:
         self, 
         coords: np.ndarray,
         projection_info: Optional[Dict] = None
-    ):
+    ) -> None:
         """
         Initialize mesh generator with preprocessed coordinates.
         
-        Parameters
-        ----------
-        coords : np.ndarray
-            Clean projected coordinates from preprocess_coords()
-        projection_info : Dict, optional
-            Projection metadata from preprocess_coords()
+        :param coords: Clean projected coordinates from preprocess_coords()
+        :param projection_info: Projection metadata from preprocess_coords()
         """
         if not isinstance(coords, np.ndarray):
             coords = np.asarray(coords)
@@ -68,7 +64,7 @@ class SPDEMesh:
                 f"Need at least 3 coordinates for mesh generation, got {len(coords)}"
             )
         
-        # Check for and remove very close coordinates that cause mesh generation issues
+        # Remove very close coordinates to prevent mesh issues
         coords = self._remove_very_close_coords(coords)
         
         if len(coords) < 3:
@@ -88,15 +84,12 @@ class SPDEMesh:
         """
         Compute user-interpretable mesh diagnostics.
         
-        Returns
-        -------
-        Dict with mesh quality and performance metrics
+        :return: Dict with mesh quality and performance metrics
         """
         n_vertices = len(self.vertices)
         n_triangles = len(self.triangles)
         n_obs = len(self.coords)
         
-        # Compute triangle areas
         areas = []
         for tri in self.triangles:
             v0, v1, v2 = self.vertices[tri]
@@ -106,13 +99,10 @@ class SPDEMesh:
         
         areas = np.array(areas)
         
-        # Compute mesh density
         total_area = np.sum(areas)
         mesh_density = n_vertices / total_area if total_area > 0 else 0
         
-        # Memory estimates (rough)
-        # A matrix: n_obs × n_mesh, sparse ~3 entries per row
-        # C, G matrices: n_mesh × n_mesh, sparse ~7 entries per row
+        # Memory estimates
         sparse_entries_A = n_obs * 3
         sparse_entries_CG = n_vertices * 7 * 2
         memory_mb = (sparse_entries_A + sparse_entries_CG) * 8 / (1024 * 1024)
@@ -128,7 +118,7 @@ class SPDEMesh:
             'memory_estimate_mb': memory_mb
         }
     
-    def _print_diagnostics(self):
+    def _print_diagnostics(self) -> None:
         """Print user-friendly diagnostics."""
         d = self.diagnostics
         
@@ -137,7 +127,6 @@ class SPDEMesh:
         print(f"  {d['n_triangles']:,} triangles")
         print(f"  Mesh/observation ratio: {d['mesh_to_obs_ratio']:.1f}")
         
-        # Convert area to km² if projection info available
         area_unit = "units^2"
         if self.projection_info.get('system', '').startswith('UTM'):
             area_unit = "km^2"
@@ -148,7 +137,6 @@ class SPDEMesh:
         print(f"  Total area: {d['total_area'] * area_scale:.1f} {area_unit}")
         print(f"  Estimated memory for Stan: {d['memory_estimate_mb']:.1f} MB")
         
-        # Performance warnings
         if d['n_vertices'] > 5000:
             print("  WARNING: Large mesh - expect slower Stan sampling")
         if d['mesh_to_obs_ratio'] > 10:
@@ -161,14 +149,11 @@ class SPDEMesh:
         :param extension_factor: Factor to extend boundary beyond convex hull
         :return: Extended boundary points
         """
-        # Compute convex hull
         hull = ConvexHull(self.coords)
         hull_points = self.coords[hull.vertices]
         
-        # Compute centroid
         centroid = np.mean(hull_points, axis=0)
         
-        # Extend points outward from centroid
         extended_points = centroid + (hull_points - centroid) * (1 + extension_factor)
         
         return extended_points
@@ -184,13 +169,11 @@ class SPDEMesh:
         if len(coords) <= 1:
             return coords
         
-        # Use a simple approach: keep first occurrence, remove subsequent close points
         from scipy.spatial.distance import cdist
         
-        keep_indices = [0]  # Always keep the first point
+        keep_indices = [0]
         
         for i in range(1, len(coords)):
-            # Check distance to all previously kept points
             distances = cdist([coords[i]], coords[keep_indices])
             min_dist = np.min(distances)
             
@@ -212,9 +195,7 @@ class SPDEMesh:
         """
         Get comprehensive mesh information.
         
-        Returns
-        -------
-        Dict containing mesh parameters, diagnostics, and metadata
+        :return: Dict containing mesh parameters, diagnostics, and metadata
         """
         if self.vertices is None:
             raise MeshError("Mesh not yet generated. Call create_adaptive_mesh() first.")
@@ -233,23 +214,9 @@ class SPDEMesh:
         """
         Estimate characteristic spatial scales from coordinate data.
         
-        Parameters
-        ----------
-        method : str
-            'variogram' for empirical variogram fitting
-            'mst' for minimum spanning tree analysis
-            'both' for both methods
-        max_pairs : int
-            Maximum pairs to use for variogram (for computational efficiency)
-            
-        Returns
-        -------
-        Dict with keys:
-            - 'estimated_range': Characteristic correlation range
-            - 'min_distance': Minimum non-zero distance
-            - 'median_distance': Median distance
-            - 'practical_range': Distance at which correlation ≈ 0.05
-            - 'method_used': Which estimation method was used
+        :param method: 'variogram' for empirical variogram fitting, 'mst' for minimum spanning tree analysis, 'both' for both methods
+        :param max_pairs: Maximum pairs to use for variogram (for computational efficiency)
+        :return: Dict with keys: 'estimated_range', 'min_distance', 'median_distance', 'practical_range', 'method_used'
         """
         n_obs = len(self.coords)
         
@@ -293,8 +260,6 @@ class SPDEMesh:
     def _estimate_range_variogram(self, max_pairs: int = 5000) -> float:
         """
         Estimate range using empirical variogram with exponential model.
-        
-        Assumes data would have constant mean and exponential covariance.
         
         :param max_pairs: Maximum pairs to use for computational efficiency
         :return: Estimated range parameter
@@ -349,8 +314,6 @@ class SPDEMesh:
         """
         Estimate spatial scale using minimum spanning tree edge lengths.
         
-        The MST captures the essential connectivity scale of the points.
-        
         :return: Characteristic spatial scale
         """
         n_obs = len(self.coords)
@@ -374,7 +337,7 @@ class SPDEMesh:
         Check if mesh resolution is appropriate for the estimated correlation range.
         
         :param verbose: Print warnings
-        :return: Dict with validation results: resolution_ok, extent_ok, edge_to_range_ratio, recommended_edge_factor
+        :return: Dict with validation results
         """
         if self.mesh_params is None and self.vertices is None:
             raise MeshError("Mesh parameters not computed. Call create_adaptive_mesh() first.")
@@ -435,7 +398,7 @@ class SPDEMesh:
         """
         Suggest reasonable SPDE parameters based on mesh and data characteristics.
         
-        :return: Dict with suggested parameters: kappa_suggestion, tau_suggestion, spatial_range_suggestion, spatial_sd_suggestion, prior_range_kappa, prior_range_tau
+        :return: Dict with suggested parameters
         """
         if not hasattr(self, 'spatial_scale'):
             self.estimate_spatial_scale()
@@ -692,45 +655,33 @@ class SPDEMesh:
         """
         Compute data-driven parameters for adaptive meshing.
         
-        Analyzes the spatial distribution of observations to determine appropriate
-        mesh resolution parameters. Uses nearest neighbor distances and overall
-        point distribution to set min/max edge lengths and transition distance.
-        
         :return: Dictionary with keys 'min_edge_near_obs', 'max_edge_far', and 'transition_distance'
         """
         tree = KDTree(self.coords)
         
-        # Analyze spacing
         k_neighbors = min(5, len(self.coords))
         distances, _ = tree.query(self.coords, k=k_neighbors)
         
-        # Handle edge cases
         if distances.shape[1] > 1:
             nn_distances = distances[:, 1]  # Skip self (distance 0)
         else:
-            # Single point or all points identical
             nn_distances = np.array([1.0])  # Default value
         
-        # Identify clusters and gaps
         all_distances = pdist(self.coords)
         if len(all_distances) == 0:
             all_distances = nn_distances
         
-        # Parameters based on distribution with safety checks
         min_edge_near_obs = max(np.percentile(nn_distances, 10) * 2, 1e-6)
         max_edge_far = np.percentile(all_distances, 90) * 0.3
         
-        # Ensure reasonable ratio
         max_ratio = 50.0
         if max_edge_far / min_edge_near_obs > max_ratio:
             max_edge_far = min_edge_near_obs * max_ratio
         elif max_edge_far < min_edge_near_obs * 2:
-            # Ensure there's some gradation
             max_edge_far = min_edge_near_obs * 2
         
         transition_distance = np.percentile(nn_distances, 75) * 5
         
-        # Validate parameters
         if not np.isfinite(min_edge_near_obs) or min_edge_near_obs <= 0:
             raise MeshError("Invalid min_edge_near_obs computed")
         if not np.isfinite(max_edge_far) or max_edge_far <= 0:
@@ -747,11 +698,7 @@ class SPDEMesh:
     def _print_adaptive_diagnostics(self) -> None:
         """
         Print diagnostics for adaptive mesh.
-        
-        Computes and displays edge length distribution statistics and refinement ratio
-        to help assess mesh quality.
         """
-        # Compute edge length distribution
         edge_lengths = []
         for tri in self.triangles:
             for i in range(3):
@@ -770,7 +717,6 @@ class SPDEMesh:
         print(f"    Max: {edge_lengths.max():.1f}")
         print(f"  Refinement ratio: {edge_lengths.max() / edge_lengths.min():.1f}x")
         
-        # Add performance warnings similar to _print_diagnostics
         n_vertices = len(self.vertices)
         n_obs = len(self.coords)
         mesh_to_obs_ratio = n_vertices / n_obs

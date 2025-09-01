@@ -53,15 +53,14 @@ class StanSPDE:
         extension_factor: float = 0.2,
         alpha: int = 2,
         verbose: bool = True
-    ):
-        """
-        Initialize SPDE model with automatic configuration.
+    ) -> None:
+        """Initialize SPDE model with automatic configuration.
         
         :param coords_raw: Raw coordinates (lon/lat or projected)
         :param y_obs: Observations at coordinates
         :param domain_knowledge: Domain hint for prior selection
         :param extension_factor: Boundary extension factor (default 0.2)
-        :param alpha: Smoothness (1 for Matérn ν=1/2, 2 for ν=3/2)
+        :param alpha: Smoothness (1 for Matern nu=1/2, 2 for nu=3/2)
         :param verbose: Print progress
         """
         self.coords_raw = coords_raw
@@ -71,20 +70,17 @@ class StanSPDE:
         self.alpha = alpha
         self.verbose = verbose
         
-        # Process coordinates
         self.coords_clean, self.kept_idx, self.proj_info = preprocess_coords(
             coords_raw
         )
         self.y_clean = y_obs[self.kept_idx]
         
-        # Create adaptive mesh
         self.mesh = SPDEMesh(self.coords_clean, self.proj_info)
         self.vertices, self.triangles = self.mesh.create_adaptive_mesh(
             extension_factor=extension_factor,
             verbose=verbose
         )
         
-        # Compute FEM matrices
         self.C, self.G, self.A, self.Q_base = compute_fem_matrices(
             self.vertices,
             self.triangles,
@@ -94,11 +90,9 @@ class StanSPDE:
             verbose=verbose
         )
         
-        # Convert to CSR format
         self.A_csr = sparse_to_stan_csr(self.A)
         self.Q_csr = sparse_to_stan_csr(self.Q_base)
         
-        # Suggest prior mode if not specified
         self.suggested_prior = self._suggest_prior_mode(
             self.mesh, self.y_clean, domain_knowledge
         )
@@ -111,14 +105,12 @@ class StanSPDE:
         spatial_fraction: float = 0.5,
         user_range_km: Optional[float] = None
     ) -> Dict:
-        """
-        Prepare Stan data with automatic prior configuration.
+        """Prepare Stan data with automatic prior configuration.
         
         :param prior_mode: Override suggested prior mode
         :param spatial_fraction: Expected spatial variance proportion
         :param user_range_km: User-specified range in km
-        
-        :returns: Stan-ready data
+        :return: Stan-ready data
         """
         if prior_mode is None:
             prior_mode = self.suggested_prior
@@ -141,10 +133,9 @@ class StanSPDE:
         return self.stan_data
     
     def get_prior_report(self) -> str:
-        """
-        Get human-readable prior configuration report.
+        """Get human-readable prior configuration report.
         
-        :returns: Formatted report
+        :return: Formatted report
         """
         if self.stan_data is None:
             self.prepare_stan_data()
@@ -152,44 +143,38 @@ class StanSPDE:
         return self._create_prior_report(self.stan_data, self.mesh)
     
     def get_mesh_diagnostics(self) -> Dict:
-        """
-        Get mesh quality diagnostics.
+        """Get mesh quality diagnostics.
         
-        :returns: Mesh diagnostics
+        :return: Mesh diagnostics
         """
         return self.mesh.diagnostics
     
     def get_scale_diagnostics(self) -> Dict:
-        """
-        Get spatial scale diagnostics.
+        """Get spatial scale diagnostics.
         
-        :returns: Scale diagnostics
+        :return: Scale diagnostics
         """
         if not hasattr(self.mesh, 'scale_diagnostics'):
             return self.mesh.compute_scale_diagnostics(verbose=False)
         return self.mesh.scale_diagnostics
     
     def _compute_log_det_Q_base(self, Q_matrix: csr_matrix) -> float:
-        """
-        Compute log determinant of sparse precision matrix.
+        """Compute log determinant of sparse precision matrix.
         
         :param Q_matrix: Scipy sparse CSR matrix (0-based indexing)
-        
-        :returns: Log determinant of Q
+        :return: Log determinant of Q
         """
         Q = Q_matrix
         
-        # Use sparse LU decomposition with error handling
+        # Use sparse LU for matrix that may be singular
         try:
             lu = splu(Q.tocsc())
             diagL = lu.L.diagonal()
             diagU = lu.U.diagonal()
             
-            # Log det = sum of logs of diagonal elements
             log_det = np.sum(np.log(np.abs(diagL))) + np.sum(np.log(np.abs(diagU)))
         except RuntimeError as e:
             if "exactly singular" in str(e):
-                # Matrix is singular, return very large negative log determinant
                 warnings.warn("Precision matrix is singular, returning -inf for log determinant")
                 log_det = -np.inf
             else:
@@ -198,22 +183,18 @@ class StanSPDE:
         return log_det
     
     def _create_prior_report(self, stan_data: Dict, mesh: SPDEMesh) -> str:
-        """
-        Generate human-readable report of prior choices.
+        """Generate human-readable report of prior choices.
         
         :param stan_data: Prepared Stan data with prior parameters
         :param mesh: Mesh object with diagnostics
-        
-        :returns: Formatted report of prior specifications
+        :return: Formatted report of prior specifications
         """
         unit_to_km = stan_data['coordinate_units_to_km']
         units = "km" if unit_to_km == 1.0 else "m" if unit_to_km == 0.001 else "units"
         
-        # Compute implied prior medians (for PC priors)
         range_median = stan_data['estimated_range']
         range_km = range_median * unit_to_km
         
-        # Prior mode description
         mode_names = {0: "auto", 1: "tight", 2: "medium", 3: "wide"}
         mode_name = mode_names.get(stan_data['prior_mode'], "custom")
         
@@ -224,7 +205,7 @@ class StanSPDE:
             f"Prior Mode: {mode_name}",
             f"Spatial Range (median): {range_km:.2f} {units}",
             f"Spatial Variance (median): {stan_data['estimated_sigma']:.3f}",
-            f"Alpha (smoothness): {stan_data['alpha']} (Matérn ν={(stan_data['alpha']-1)/2:.1f})",
+            f"Alpha (smoothness): {stan_data['alpha']} (Matern nu={(stan_data['alpha']-1)/2:.1f})",
             f"",
             f"PC Prior Hyperparameters:",
             f"  Range: P(ρ < {stan_data['rho_0'] * unit_to_km:.2f} {units}) = {stan_data['alpha_rho']:.3f}",
@@ -244,33 +225,26 @@ class StanSPDE:
         y: np.ndarray, 
         domain_knowledge: Optional[DomainKnowledge] = None
     ) -> PriorMode:
-        """
-        Suggest appropriate prior mode based on mesh and data characteristics.
+        """Suggest appropriate prior mode based on mesh and data characteristics.
         
         :param mesh: Configured mesh object
         :param y: Observation values
         :param domain_knowledge: Domain hint ("environmental", "disease", "economic", etc.)
-        
-        :returns: Suggested prior_mode
+        :return: Suggested prior_mode
         """
-        # Get mesh diagnostics
         if not hasattr(mesh, 'scale_diagnostics'):
             scale_diag = mesh.compute_scale_diagnostics(verbose=False)
         else:
             scale_diag = mesh.scale_diagnostics
         
-        # Analyze observation density
         n_obs = len(mesh.coords)
-        # Calculate mesh area from extent
         mesh_extent = scale_diag['suggestions']['mesh_extent']
-        mesh_area = mesh_extent ** 2  # Approximate area
+        mesh_area = mesh_extent ** 2
         obs_density = n_obs / mesh_area if mesh_area > 0 else 0
         
-        # Check mesh resolution adequacy
         validation = scale_diag['validation']
         resolution_ok = validation['resolution_ok']
         
-        # Domain-specific defaults
         domain_defaults = {
             'environmental': 'medium',  # Moderate spatial correlation expected
             'disease': 'tight',         # Strong local clustering
@@ -279,19 +253,16 @@ class StanSPDE:
             'soil': 'tight',           # Highly localized
         }
         
-        # Start with domain knowledge if provided
         if domain_knowledge and domain_knowledge in domain_defaults:
             return domain_defaults[domain_knowledge]
         
-        # Data-driven suggestion based on observation density and variability
         y_cv = np.std(y) / np.abs(np.mean(y)) if np.mean(y) != 0 else np.std(y)
         
-        # Decision rules (can be refined based on experience)
-        if obs_density > 0.01:  # High density
+        if obs_density > 0.01:
             return "tight" if y_cv > 0.5 else "medium" 
-        elif obs_density < 0.001:  # Low density
+        elif obs_density < 0.001:
             return "wide"
-        else:  # Medium density
+        else:
             return "medium" if resolution_ok else "wide"
     
     def _prepare_stan_data_with_priors(
@@ -307,8 +278,7 @@ class StanSPDE:
         user_range_km: Optional[float] = None,
         alpha: int = 2
     ) -> Dict:
-        """
-        Prepare Stan data with automatic prior configuration using mesh diagnostics.
+        """Prepare Stan data with automatic prior configuration using mesh diagnostics.
         
         :param y: Observations at coordinate locations
         :param coords: Cleaned coordinates from preprocess_coords()
@@ -319,38 +289,30 @@ class StanSPDE:
         :param prior_mode: Prior configuration mode
         :param spatial_fraction: Expected proportion of variance from spatial field (0-1)
         :param user_range_km: User-specified range in km (for custom mode)
-        :param alpha: Smoothness parameter (1 for Matérn ν=1/2, 2 for ν=3/2)
-        
-        :returns: Stan data with automatic prior configuration
+        :param alpha: Smoothness parameter (1 for Matern nu=1/2, 2 for nu=3/2)
+        :return: Stan data with automatic prior configuration
         """
-        # Ensure scale diagnostics are computed
         if not hasattr(mesh, 'scale_diagnostics'):
             scale_diag = mesh.compute_scale_diagnostics(verbose=False)
         else:
             scale_diag = mesh.scale_diagnostics
         
-        # Extract key quantities
         spatial_scale = scale_diag['spatial_scale']
         suggestions = scale_diag['suggestions']
         
-        # Convert units if needed
         unit_to_km = mesh.projection_info.get('unit_to_km', 1.0)
         
-        # Handle custom range specification
         if prior_mode == "custom" and user_range_km is not None:
-            # Convert user's km specification to model units
             user_range_units = user_range_km / unit_to_km
             estimated_range = user_range_units
         else:
             estimated_range = spatial_scale['estimated_range']
         
-        # Map prior modes
         mode_map = {"auto": 0, "tight": 1, "medium": 2, "wide": 3, "custom": 0}
         
-        # Compute log determinant using original 0-based matrix  
+  
         log_det_Q_base = self._compute_log_det_Q_base(Q_base)
         
-        # Prepare Stan data
         stan_data = {
             # Observation data
             'N_obs': len(y),
@@ -369,22 +331,18 @@ class StanSPDE:
             'Q_u': Q_matrix_csr[0].tolist(),
             'log_det_Q_base': log_det_Q_base,
             
-            # Scale information from mesh diagnostics
+            # Spatial scale information from mesh diagnostics
             'estimated_range': estimated_range,
-            'estimated_sigma': np.sqrt(spatial_fraction * np.var(y)),
-            'spatial_fraction': spatial_fraction,
+            'min_distance': spatial_scale['min_distance'],
+            'median_distance': spatial_scale['median_distance'],
+            'mesh_extent': suggestions['mesh_extent'],
             'data_sd': np.std(y),
             'coordinate_units_to_km': unit_to_km,
             
-            # Prior mode selection
+            # Prior configuration
             'prior_mode': mode_map[prior_mode],
+            'spatial_fraction': spatial_fraction,
             'alpha': alpha,
-            
-            # PC prior parameters (computed automatically in Stan)
-            'rho_0': estimated_range,  # Will be adjusted in Stan based on mode
-            'alpha_rho': 0.5,          # Will be adjusted in Stan based on mode  
-            'sigma_0': np.sqrt(spatial_fraction * np.var(y)),
-            'alpha_sigma': 0.05,       # Will be adjusted in Stan based on mode
         }
         
         return stan_data

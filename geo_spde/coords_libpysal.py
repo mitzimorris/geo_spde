@@ -7,7 +7,6 @@ import numpy as np
 import pyproj
 import warnings
 
-# Try to import libpysal for improved functionality
 try:
     import libpysal
     HAS_LIBPYSAL = True
@@ -20,36 +19,32 @@ from scipy.sparse.csgraph import minimum_spanning_tree
 from scipy.spatial.distance import pdist, squareform
 
 from geo_spde.exceptions import CoordsError
-from typing import Tuple, Dict, Union, List
+from typing import Tuple, Dict, Union, List, Optional
 
 
 def estimate_characteristic_scale(coords: np.ndarray, method: str = 'mst') -> Dict[str, float]:
     """
     Estimate characteristic spatial scale from point pattern.
     
-    @param coords: Coordinate array (n_obs, 2)
-    @param method: 'mst' for minimum spanning tree (fast), 'nn' for nearest neighbor distances
-    @returns: Dict with scale estimates: characteristic_scale, min_distance, median_distance, mesh_recommended_edge
+    :param coords: Coordinate array (n_obs, 2)
+    :param method: 'mst' for minimum spanning tree (fast), 'nn' for nearest neighbor distances
+    :return: Dict with scale estimates: characteristic_scale, min_distance, median_distance, mesh_recommended_edge
     """
     n_obs = len(coords)
     
-    # Use libpysal KDTree if available for better performance
     if HAS_LIBPYSAL and method == 'nn':
         kd = libpysal.cg.KDTree(coords)
         nn_distances = []
         for i in range(min(n_obs, 500)):
-            # Query for 2 nearest neighbors (first is self)
             dists, _ = kd.query(coords[i], k=2)
             nn_distances.append(dists[1])  # Second closest is first neighbor
         characteristic_scale = np.median(nn_distances) * 5  # Scale up from NN
         
-        # Still need distance matrix for other metrics
         dists = distance_matrix(coords, coords)
         dists_flat = dists[np.triu_indices(n_obs, k=1)]
         min_dist = np.min(dists_flat[dists_flat > 0]) if np.any(dists_flat > 0) else 1.0
         median_dist = np.median(dists_flat)
     else:
-        # Original implementation
         dists = distance_matrix(coords, coords)
         dists_flat = dists[np.triu_indices(n_obs, k=1)]
         min_dist = np.min(dists_flat[dists_flat > 0]) if np.any(dists_flat > 0) else 1.0
@@ -61,7 +56,7 @@ def estimate_characteristic_scale(coords: np.ndarray, method: str = 'mst') -> Di
             mst = minimum_spanning_tree(dist_matrix)
             mst_edges = mst.tocoo().data
             characteristic_scale = np.percentile(mst_edges, 75)
-        else:  # nearest neighbor
+        else:
             nn_distances = []
             for i in range(min(n_obs, 500)):
                 dists_i = dists[i] if n_obs < 500 else distance_matrix(coords[i:i+1], coords)[0]
@@ -81,8 +76,8 @@ def compute_convex_hull_diameter(coords: np.ndarray) -> float:
     """
     Compute maximum distance between convex hull vertices.
     
-    @param coords: Coordinate array of shape (n_obs, 2)
-    @returns: Maximum distance between hull vertices
+    :param coords: Coordinate array of shape (n_obs, 2)
+    :return: Maximum distance between hull vertices
     """
     if len(coords) < 3:
         if len(coords) == 2:
@@ -116,9 +111,9 @@ def remove_duplicate_coords_libpysal(coords: np.ndarray, tolerance: float = 1e-6
     """
     Remove duplicate coordinates using libpysal's KDTree for efficient nearest neighbor search.
     
-    @param coords: Coordinate array of shape (n_obs, 2)
-    @param tolerance: Distance tolerance for considering points duplicates
-    @returns: Tuple of (unique_coords, unique_indices, n_duplicates)
+    :param coords: Coordinate array of shape (n_obs, 2)
+    :param tolerance: Distance tolerance for considering points duplicates
+    :return: Tuple of (unique_coords, unique_indices, n_duplicates)
     """
     if not HAS_LIBPYSAL or len(coords) <= 1:
         # Fall back to original implementation
@@ -152,9 +147,9 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
     """
     Remove duplicate coordinates within tolerance (scipy implementation).
     
-    @param coords: Coordinate array of shape (n_obs, 2)
-    @param tolerance: Distance tolerance for considering points duplicates
-    @returns: Tuple of (unique_coords, unique_indices, n_duplicates)
+    :param coords: Coordinate array of shape (n_obs, 2)
+    :param tolerance: Distance tolerance for considering points duplicates
+    :return: Tuple of (unique_coords, unique_indices, n_duplicates)
     """
     if len(coords) <= 1:
         return coords, np.arange(len(coords)), 0
@@ -182,13 +177,13 @@ def remove_duplicate_coords(coords: np.ndarray, tolerance: float = 1e-6) -> Tupl
 
 
 # Additional libpysal-specific utilities
-def compute_alpha_shape(coords: np.ndarray, alpha: float = None) -> np.ndarray:
+def compute_alpha_shape(coords: np.ndarray, alpha: Optional[float] = None) -> np.ndarray:
     """
     Compute alpha shape (concave hull) using libpysal.
     
-    @param coords: Coordinate array of shape (n_obs, 2)
-    @param alpha: Alpha parameter (None for auto-detection)
-    @returns: Array of points forming the alpha shape boundary
+    :param coords: Coordinate array of shape (n_obs, 2)
+    :param alpha: Alpha parameter (None for auto-detection)
+    :return: Array of points forming the alpha shape boundary
     """
     if not HAS_LIBPYSAL:
         # Fall back to convex hull

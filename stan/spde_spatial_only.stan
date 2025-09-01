@@ -1,4 +1,3 @@
-
 functions {
   // Log density of GMRF with sparse precision matrix
   real sparse_gmrf_lpdf(vector u_field, 
@@ -37,13 +36,9 @@ parameters {
   real<lower=0> sigma;                 // observation noise SD
   real<lower=0> kappa;
   real<lower=0> tau;
-  //  real<lower=0> spatial_sd;     // Standard deviation of spatial field
-  //  real<lower=0> spatial_range;  // Practical correlation range
 }
 transformed parameters {
   vector[N_obs] spatial_effect = csr_matrix_times_vector(N_obs, N_mesh, A_w, A_v, A_u, u_field);
-  //  real tau = 1 / square(spatial_sd);
-  //  real kappa = sqrt(8) / spatial_range;  // For Matérn ν=1/2
 }
 model {
   // Scale precision matrix Q by kappa^2 and tau
@@ -57,17 +52,9 @@ model {
   y ~ normal(spatial_effect, sigma);
   
   // Priors
-  tau ~ std_normal();
-  kappa ~ normal(4, 1);          // Moderate range (roughly 1/3 of region)
-  sigma ~ std_normal();
-  //  spatial_sd ~ exponential(1);           // P(sd > 1) ≈ 0.37
-  //  spatial_range ~ inv_gamma(2, 1);       // P(range > 0.5) ≈ 0.37
-  //  sigma ~ exponential(1);              // Prior for observation noise
+  tau ~ gamma(1, 0.00005);
+  kappa ~ gamma(4,1);
+  sigma ~ exponential(1);
+
 }
 
-// generated quantities {
-//   array[N_obs] real y_rep;             // posterior predictive samples
-//   for (i in 1:N_obs) {
-//     y_rep[i] = normal_rng(spatial_effect[i], sigma);
-//   }
-// }

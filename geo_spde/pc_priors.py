@@ -20,26 +20,17 @@ def pc_prior_range(
     """
     Compute PC prior parameters for spatial range.
     
-    The PC prior for range rho has the form:
-    pi(rho) proportional to rho^(-1) exp(-lambda_rho * rho)
-    
-    where lambda_rho is chosen such that P(rho < rho_0) = alpha_rho
-    
     :param rho_0: Reference range value
     :param alpha_rho: Probability that range < rho_0 (typically 0.5)
     :param alpha: Smoothness parameter (1 for Matern nu=1/2, 2 for nu=3/2)
-    
-    :returns: Dict with lambda_rho (rate parameter), kappa_0 (reference kappa), prior_params
+    :return: Dict with lambda_rho (rate parameter), kappa_0 (reference kappa), prior_params
     """
     # For Matern, relationship between range and kappa
-    # range = sqrt(8*nu) / kappa
-    # For nu=1/2 (alpha=1): sqrt(8*0.5) = 2
-    # For nu=3/2 (alpha=2): sqrt(8*1.5) = sqrt(12)
     
     if alpha == 1:
-        scale_factor = 2.0
+        scale_factor = 2.0  # sqrt(8*0.5)
     elif alpha == 2:
-        scale_factor = np.sqrt(12)
+        scale_factor = np.sqrt(12)  # sqrt(8*1.5)
     else:
         raise ValueError(f"Unsupported alpha value: {alpha}")
     
@@ -62,15 +53,9 @@ def pc_prior_variance(
     """
     Compute PC prior parameters for spatial standard deviation.
     
-    The PC prior for standard deviation sigma has the form:
-    pi(sigma) proportional to exp(-lambda_sigma * sigma)
-    
-    where lambda_sigma is chosen such that P(sigma > sigma_0) = alpha_sigma
-    
     :param sigma_0: Reference standard deviation value
     :param alpha_sigma: Probability that sigma > sigma_0 (typically 0.05)
-    
-    :returns: Dict with lambda_sigma (rate parameter), sigma_0 (reference value), prior_params
+    :return: Dict with lambda_sigma (rate parameter), sigma_0 (reference value), prior_params
     """
     lambda_sigma = -np.log(alpha_sigma) / sigma_0
 
@@ -98,8 +83,7 @@ def compute_pc_prior_params(
     :param spatial_fraction: Expected proportion of variance from spatial field
     :param mesh_diagnostics: Mesh scale diagnostics
     :param alpha: Smoothness parameter
-    
-    :returns: Complete PC prior parameters for Stan
+    :return: Complete PC prior parameters for Stan
     """
     min_distance = mesh_diagnostics['spatial_scale']['min_distance']
     median_distance = mesh_diagnostics['spatial_scale']['median_distance']
@@ -156,8 +140,7 @@ def validate_pc_priors(
     :param pc_params: PC prior parameters
     :param mesh_diagnostics: Mesh diagnostics
     :param verbose: Print warnings
-    
-    :returns: Validation results
+    :return: Validation results
     """
     validation = {
         'range_compatible': True,
@@ -192,7 +175,7 @@ def generate_pc_prior_code() -> str:
     """
     Generate Stan code for PC priors.
     
-    :returns: Stan functions for PC priors
+    :return: Stan functions for PC priors
     """
     return """
 functions {
@@ -240,8 +223,7 @@ def sample_from_pc_prior(
     :param pc_params: PC prior parameters
     :param n_samples: Number of samples to draw
     :param alpha: Smoothness parameter
-    
-    :returns: Samples from prior distributions
+    :return: Samples from prior distributions
     """
     lambda_rho = pc_params['lambda_rho']
     range_samples = expon.rvs(scale=1/lambda_rho, size=n_samples)
@@ -250,9 +232,9 @@ def sample_from_pc_prior(
     sigma_samples = expon.rvs(scale=1/lambda_sigma, size=n_samples)
     
     if alpha == 1:
-        scale_factor = 2.0  # sqrt(8 * 0.5) for Matern nu=1/2
+        scale_factor = 2.0  # sqrt(8 * 0.5)
     else:
-        scale_factor = np.sqrt(12)  # sqrt(8 * 1.5) for Matern nu=3/2
+        scale_factor = np.sqrt(12)  # sqrt(8 * 1.5)
     
     kappa_samples = scale_factor / range_samples
     tau_samples = gamma.rvs(a=1, scale=1/lambda_sigma, size=n_samples)

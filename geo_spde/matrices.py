@@ -24,36 +24,15 @@ def compute_fem_matrices(
     alpha: int = 1,
     verbose: bool = True
 ) -> Tuple[sparse.csr_matrix, sparse.csr_matrix, sparse.csr_matrix, Optional[sparse.csr_matrix]]:
-    """
-    Compute all FEM matrices needed for SPDE approximation.
+    """Compute all FEM matrices needed for SPDE approximation.
     
-    Parameters
-    ----------
-    vertices : np.ndarray
-        Mesh vertex coordinates of shape (n_mesh, 2)
-    triangles : np.ndarray
-        Triangle connectivity of shape (n_tri, 3)
-    obs_coords : np.ndarray
-        Observation coordinates of shape (n_obs, 2)
-    kappa : float, optional
-        SPDE parameter controlling spatial range. If None, Q matrix not computed
-    alpha : int
-        SPDE smoothness parameter:
-        - alpha=1 for Matern nu=1/2 (exponential covariance)
-        - alpha=2 for Matern nu=3/2 (once differentiable)
-    verbose : bool
-        Print computation progress
-        
-    Returns
-    -------
-    C : sparse.csr_matrix
-        Mass matrix (n_mesh x n_mesh)
-    G : sparse.csr_matrix
-        Stiffness matrix (n_mesh x n_mesh)
-    A : sparse.csr_matrix
-        Projector matrix (n_obs x n_mesh)
-    Q : sparse.csr_matrix or None
-        Precision matrix (n_mesh x n_mesh), None if kappa not provided
+    :param vertices: Mesh vertex coordinates of shape (n_mesh, 2)
+    :param triangles: Triangle connectivity of shape (n_tri, 3)
+    :param obs_coords: Observation coordinates of shape (n_obs, 2)
+    :param kappa: SPDE parameter controlling spatial range. If None, Q matrix not computed
+    :param alpha: SPDE smoothness parameter (1 for Matern nu=1/2, 2 for Matern nu=3/2)
+    :param verbose: Print computation progress
+    :return: Tuple of (C mass matrix, G stiffness matrix, A projector matrix, Q precision matrix or None)
     """
     n_mesh = len(vertices)
     n_obs = len(obs_coords)
@@ -103,34 +82,15 @@ def compute_matern_precision_nu_half(
     G: sparse.csr_matrix, 
     kappa: float
 ) -> sparse.csr_matrix:
-    """
-    Compute precision matrix for Matern covariance with nu = 1/2.
+    """Compute precision matrix for Matern covariance with nu = 1/2.
     
     The Matern nu = 1/2 field (exponential covariance) is the solution to:
         (kappa^2 - delta)u(s) = W(s)
     
-    where delta is the Laplacian operator.
-    
-    The discretized precision matrix is:
-        Q = kappa^2 * C + G
-    
-    This gives an exponentially decaying spatial correlation with:
-        - Range parameter: rho = 1/kappa
-        - Smoothness: nu = 1/2 (rough, non-differentiable field)
-    
-    Parameters
-    ----------
-    C : sparse.csr_matrix
-        Mass matrix from FEM discretization
-    G : sparse.csr_matrix
-        Stiffness matrix from FEM discretization
-    kappa : float
-        SPDE range parameter (kappa = 1/rho where rho is correlation range)
-        
-    Returns
-    -------
-    sparse.csr_matrix
-        Sparse precision matrix Q for Matern nu = 1/2
+    :param C: Mass matrix from FEM discretization
+    :param G: Stiffness matrix from FEM discretization
+    :param kappa: SPDE range parameter (kappa = 1/rho where rho is correlation range)
+    :return: Sparse precision matrix Q for Matern nu = 1/2
     """
     return kappa**2 * C + G
 
@@ -140,37 +100,18 @@ def compute_matern_precision_nu_three_halves(
     G: sparse.csr_matrix, 
     kappa: float
 ) -> sparse.csr_matrix:
-    """
-    Compute precision matrix for Matern covariance with nu = 3/2.
+    """Compute precision matrix for Matern covariance with nu = 3/2.
     
     The Matern nu = 3/2 field (smoother than nu = 1/2) is the solution to:
         (kappa^2 - delta)^2 u(s) = W(s)
     
-    where delta is the Laplacian operator.
-    
     The discretized precision matrix is:
         Q = (kappa^2 * C + G) * C^(-1) * (kappa^2 * C + G)
     
-    This gives a once-differentiable field with:
-        - Range parameter: rho = sqrt(3)/kappa  
-        - Smoothness: nu = 3/2 (once differentiable)
-    
-    NOTE: This computation is more expensive as it requires solving
-    linear systems with the mass matrix C.
-    
-    Parameters
-    ----------
-    C : sparse.csr_matrix
-        Mass matrix from FEM discretization
-    G : sparse.csr_matrix
-        Stiffness matrix from FEM discretization
-    kappa : float
-        SPDE range parameter (kappa = sqrt(3)/rho where rho is correlation range)
-        
-    Returns
-    -------
-    sparse.csr_matrix
-        Sparse precision matrix Q for Matern nu = 3/2
+    :param C: Mass matrix from FEM discretization
+    :param G: Stiffness matrix from FEM discretization
+    :param kappa: SPDE range parameter (kappa = sqrt(3)/rho where rho is correlation range)
+    :return: Sparse precision matrix Q for Matern nu = 3/2
     """
     B = kappa**2 * C + G
     
@@ -217,30 +158,18 @@ def _compute_mass_matrix_vectorized(vertices: np.ndarray, triangles: np.ndarray)
     """
     Compute mass matrix C where C[i,j] = integral(psi_i(s) * psi_j(s) ds) using vectorized operations.
     
-    Here psi_i are the linear basis functions on the triangular mesh.
-    
-    Parameters
-    ----------
-    vertices : np.ndarray
-        Mesh vertex coordinates
-    triangles : np.ndarray
-        Triangle connectivity
-        
-    Returns
-    -------
-    sparse.csr_matrix
-        Mass matrix
+    :param vertices: Mesh vertex coordinates
+    :param triangles: Triangle connectivity
+    :return: Mass matrix
     """
     n_vertices = len(vertices)
     n_triangles = len(triangles)
     
-    # Get all triangle vertices at once: (n_tri, 3, 2)
     tri_coords = vertices[triangles]
     
     # Vectorized area computation for all triangles
     areas = _triangle_areas_vectorized(tri_coords)
     
-    # Check for degenerate triangles
     degenerate_mask = areas <= 1e-12
     if np.any(degenerate_mask):
         n_degenerate = np.sum(degenerate_mask)
@@ -251,13 +180,11 @@ def _compute_mass_matrix_vectorized(vertices: np.ndarray, triangles: np.ndarray)
         areas = areas[valid_mask]
         n_triangles = len(triangles)
     
-    # Mass matrix entries for linear elements:
-    # Diagonal terms: area/6, Off-diagonal terms: area/12
+    # Mass matrix entries for linear elements
     diagonal_vals = areas / 6.0
     off_diagonal_vals = areas / 12.0
     
     # Pre-allocate sparse matrix arrays
-    # Each triangle contributes 9 entries (3x3)
     total_entries = n_triangles * 9
     row_indices = np.empty(total_entries, dtype=np.int32)
     col_indices = np.empty(total_entries, dtype=np.int32)
@@ -296,30 +223,17 @@ def _compute_stiffness_matrix_vectorized(vertices: np.ndarray, triangles: np.nda
     """
     Compute stiffness matrix G where G[i,j] = integral(grad(psi_i) . grad(psi_j) ds) using vectorized operations.
     
-    Here psi_i are the linear basis functions and grad denotes the gradient.
-    
-    Parameters
-    ----------
-    vertices : np.ndarray
-        Mesh vertex coordinates
-    triangles : np.ndarray
-        Triangle connectivity
-        
-    Returns
-    -------
-    sparse.csr_matrix
-        Stiffness matrix
+    :param vertices: Mesh vertex coordinates
+    :param triangles: Triangle connectivity
+    :return: Stiffness matrix
     """
     n_vertices = len(vertices)
     n_triangles = len(triangles)
     
-    # Get all triangle vertices at once: (n_tri, 3, 2)
     tri_coords = vertices[triangles]
     
-    # Vectorized area computation
     areas = _triangle_areas_vectorized(tri_coords)
     
-    # Check for degenerate triangles
     degenerate_mask = areas <= 1e-12
     if np.any(degenerate_mask):
         n_degenerate = np.sum(degenerate_mask)
@@ -367,17 +281,9 @@ def _point_in_triangle(point: np.ndarray, triangle_vertices: np.ndarray) -> bool
     """
     Test if a point is inside a triangle using barycentric coordinates.
     
-    Parameters
-    ----------
-    point : np.ndarray
-        Point coordinates (x, y)
-    triangle_vertices : np.ndarray
-        Triangle vertex coordinates, shape (3, 2)
-        
-    Returns
-    -------
-    bool
-        True if point is inside triangle
+    :param point: Point coordinates (x, y)
+    :param triangle_vertices: Triangle vertex coordinates, shape (3, 2)
+    :return: True if point is inside triangle
     """
     v0, v1, v2 = triangle_vertices
     
@@ -410,21 +316,10 @@ def _compute_projector_matrix_vectorized(
     """
     Compute projector matrix A where A[i,k] = psi_k(s_i) using vectorized operations.
     
-    Here psi_k is the k-th basis function evaluated at observation location s_i.
-    
-    Parameters
-    ----------
-    vertices : np.ndarray
-        Mesh vertex coordinates
-    triangles : np.ndarray
-        Triangle connectivity
-    obs_coords : np.ndarray
-        Observation coordinates
-        
-    Returns
-    -------
-    sparse.csr_matrix
-        Projector matrix
+    :param vertices: Mesh vertex coordinates
+    :param triangles: Triangle connectivity
+    :param obs_coords: Observation coordinates
+    :return: Projector matrix
     """
     n_obs = len(obs_coords)
     n_vertices = len(vertices)
@@ -482,15 +377,8 @@ def _triangle_areas_vectorized(tri_coords: np.ndarray) -> np.ndarray:
     """
     Compute areas of all triangles using vectorized operations.
     
-    Parameters
-    ----------
-    tri_coords : np.ndarray
-        Triangle coordinates of shape (n_tri, 3, 2)
-        
-    Returns
-    -------
-    np.ndarray
-        Triangle areas of shape (n_tri,)
+    :param tri_coords: Triangle coordinates of shape (n_tri, 3, 2)
+    :return: Triangle areas of shape (n_tri,)
     """
     v1, v2, v3 = tri_coords[:, 0], tri_coords[:, 1], tri_coords[:, 2]
     
@@ -507,19 +395,8 @@ def _compute_basis_gradients_vectorized(tri_coords: np.ndarray) -> np.ndarray:
     """
     Compute gradients of linear basis functions for all triangles.
     
-    For linear basis functions on triangles:
-    psi_1 = 1 - xi - eta, psi_2 = xi, psi_3 = eta
-    where (xi, eta) are local coordinates.
-    
-    Parameters
-    ----------
-    tri_coords : np.ndarray
-        Triangle coordinates of shape (n_tri, 3, 2)
-        
-    Returns
-    -------
-    np.ndarray
-        Basis function gradients of shape (n_tri, 3, 2)
+    :param tri_coords: Triangle coordinates of shape (n_tri, 3, 2)
+    :return: Basis function gradients of shape (n_tri, 3, 2)
     """
     n_tri = tri_coords.shape[0]
     v1, v2, v3 = tri_coords[:, 0], tri_coords[:, 1], tri_coords[:, 2]
@@ -531,7 +408,6 @@ def _compute_basis_gradients_vectorized(tri_coords: np.ndarray) -> np.ndarray:
     # Compute determinants
     det_B = B[:, 0, 0] * B[:, 1, 1] - B[:, 0, 1] * B[:, 1, 0]
     
-    # Check for degenerate triangles
     degenerate_mask = np.abs(det_B) < 1e-12
     if np.any(degenerate_mask):
         raise MatrixError(f"Found {np.sum(degenerate_mask)} degenerate triangles in gradient computation")
@@ -567,25 +443,11 @@ def _compute_barycentric_vectorized(
     """
     Compute barycentric coordinates for all points using vectorized operations.
     
-    Barycentric coordinates (lambda_1, lambda_2, lambda_3) satisfy:
-    point = lambda_1 * v1 + lambda_2 * v2 + lambda_3 * v3
-    with lambda_1 + lambda_2 + lambda_3 = 1
-    
-    Parameters
-    ----------
-    points : np.ndarray
-        Point coordinates of shape (n_points, 2)
-    vertices : np.ndarray
-        Mesh vertex coordinates
-    triangles : np.ndarray
-        Triangle connectivity
-    triangle_indices : np.ndarray
-        Triangle index for each point
-        
-    Returns
-    -------
-    np.ndarray
-        Barycentric coordinates of shape (n_points, 3)
+    :param points: Point coordinates of shape (n_points, 2)
+    :param vertices: Mesh vertex coordinates
+    :param triangles: Triangle connectivity
+    :param triangle_indices: Triangle index for each point
+    :return: Barycentric coordinates of shape (n_points, 3)
     """
     n_points = len(points)
     
@@ -611,7 +473,6 @@ def _compute_barycentric_vectorized(
     area2 = signed_areas_vectorized(v1, points, v3)  # lambda_2 (opposite v2)  
     area3 = signed_areas_vectorized(v1, v2, points)  # lambda_3 (opposite v3)
     
-    # Check for degenerate triangles
     degenerate_mask = total_areas <= 1e-12
     if np.any(degenerate_mask):
         raise MatrixError(f"Degenerate triangles in barycentric coordinate computation")
@@ -901,14 +762,14 @@ def check_precision_conditioning(
     if verbose:
         if condition_number > 1e8:
             warnings.warn(
-                f"Precision matrix is poorly conditioned (κ ≈ {condition_number:.2e}).\n"
+                f"Precision matrix is poorly conditioned (kappa approximately {condition_number:.2e}).\n"
                 f"  This typically means kappa is too large for the mesh scale.\n"
                 f"  Current kappa = {kappa:.4e} (range = {np.sqrt(8)/kappa:.3f})\n"
                 f"  Try reducing kappa or using auto_scale=True"
             )
         elif condition_number > 1e6:
             warnings.warn(
-                f"Precision matrix conditioning is marginal (κ ≈ {condition_number:.2e}).\n"
+                f"Precision matrix conditioning is marginal (kappa approximately {condition_number:.2e}).\n"
                 f"  Consider adjusting parameters if convergence issues occur."
             )
         
@@ -951,13 +812,13 @@ def _print_scale_aware_diagnostics(
         kappa = scale_info['kappa_used']
         tau = scale_info['tau_used']
         print(f"  Parameters:")
-        print(f"    kappa = {kappa:.4e} (range ≈ {np.sqrt(8)/kappa:.3f} units)")
-        print(f"    tau = {tau:.4e} (marginal sd ≈ {1/np.sqrt(tau):.3f})")
+        print(f"    kappa = {kappa:.4e} (range approximately {np.sqrt(8)/kappa:.3f} units)")
+        print(f"    tau = {tau:.4e} (marginal sd approximately {1/np.sqrt(tau):.3f})")
     
     if 'condition_number' in scale_info:
         cond = scale_info['condition_number']
         status = "good" if cond < 1e4 else "marginal" if cond < 1e6 else "poor"
-        print(f"  Conditioning: {status} (κ ≈ {cond:.2e})")
+        print(f"  Conditioning: {status} (kappa approximately {cond:.2e})")
     
     if 'dominance_ratio' in scale_info:
         ratio = scale_info['dominance_ratio']
