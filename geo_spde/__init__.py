@@ -2,13 +2,12 @@
 GEO_SPDE: Simplified SPDE modeling with automatic PC priors and adaptive mesh
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "Mitzi Morris"
 
 # Main simplified API
 from .stan_spde import (
     StanSPDE,
-    sparse_to_stan_csr,
     PriorMode,
     DomainKnowledge,
 )
@@ -24,6 +23,7 @@ from .pc_priors import (
 from .coords import preprocess_coords
 from .mesh import SPDEMesh
 from .matrices import compute_fem_matrices
+from .utils import sparse_to_stan_csr
 
 # Exceptions
 from .exceptions import (
@@ -36,7 +36,6 @@ from .exceptions import (
 __all__ = [
     # Main API
     'StanSPDE',
-    'sparse_to_stan_csr',
     'PriorMode', 
     'DomainKnowledge',
     
@@ -49,6 +48,7 @@ __all__ = [
     'preprocess_coords',
     'SPDEMesh',
     'compute_fem_matrices',
+    'sparse_to_stan_csr',
     
     # Exceptions
     'GeoSpdeError',
