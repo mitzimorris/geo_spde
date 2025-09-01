@@ -2,7 +2,7 @@
 GEO_SPDE: Simplified SPDE modeling with automatic PC priors and adaptive mesh
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __author__ = "Mitzi Morris"
 
 # Main simplified API
@@ -49,7 +49,7 @@ __all__ = [
     'SPDEMesh',
     'compute_fem_matrices',
     'sparse_to_stan_csr',
-    
+nn    
     # Exceptions
     'GeoSpdeError',
     'CoordsError',
