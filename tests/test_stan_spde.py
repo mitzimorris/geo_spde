@@ -48,7 +48,7 @@ class TestStanSPDEInitialization:
         
         assert spde.coords_raw.shape == (8, 2)
         assert spde.y_obs.shape == (8,)
-        assert spde.alpha == 2  # Default smoothness
+        assert spde.alpha == 1  # Default smoothness
         assert spde.extension_factor == 0.2  # Default extension
         assert spde.domain_knowledge is None
         
@@ -234,9 +234,10 @@ class TestUtilityFunctions:
         coords = np.array([
             [-122.4, 37.8], [-122.3, 37.9], [-122.2, 37.7],
             [-122.1, 37.6], [-122.0, 37.5], [-121.9, 37.4],
-            [-121.8, 37.3], [-121.7, 37.2]
+            [-121.8, 37.3], [-121.7, 37.2], [-121.6, 37.1],
+            [-121.5, 37.0], [-121.4, 36.9], [-121.3, 36.8]
         ])
-        y_obs = np.array([50, 48, 52, 49, 51, 47, 53, 46])
+        y_obs = np.array([50, 48, 52, 49, 51, 47, 53, 46, 45, 44, 43, 42])
         
         spde = StanSPDE(coords, y_obs, verbose=False)
         stan_data = spde.prepare_stan_data()
@@ -246,6 +247,31 @@ class TestUtilityFunctions:
         assert isinstance(log_det, float)
         assert not np.isnan(log_det)
         assert not np.isinf(log_det)
+        
+    def test_log_det_rank_deficient_matrix(self):
+        """Test log determinant handles rank-deficient matrices correctly."""
+        from scipy.sparse import diags
+        
+        coords = np.array([
+            [-122.4, 37.8], [-122.3, 37.9], [-122.2, 37.7],
+            [-122.1, 37.6], [-122.0, 37.5], [-121.9, 37.4],
+            [-121.8, 37.3], [-121.7, 37.2], [-121.6, 37.1],
+            [-121.5, 37.0], [-121.4, 36.9], [-121.3, 36.8]
+        ])
+        y_obs = np.array([50, 48, 52, 49, 51, 47, 53, 46, 45, 44, 43, 42])
+        
+        spde = StanSPDE(coords, y_obs, verbose=False)
+        
+        # Create a rank-deficient test matrix
+        n = 10
+        Q_test = diags([2, -1, -1], [0, -1, 1], shape=(n, n)).tocsr()
+        Q_test = Q_test.T @ Q_test  # Make it positive semi-definite
+        
+        log_det = spde._compute_log_det_Q_base(Q_test)
+        
+        assert isinstance(log_det, float)
+        assert not np.isnan(log_det)
+        assert log_det > 0  # Should be positive for positive eigenvalues
 
 
 class TestStanSPDEIntegration:

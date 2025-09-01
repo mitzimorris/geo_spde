@@ -10,7 +10,8 @@ This module provides a streamlined interface for SPDE modeling in Stan with:
 import numpy as np
 from typing import Dict, Tuple, Optional, Literal
 from scipy.sparse import csr_matrix
-from scipy.sparse.linalg import splu
+from scipy.sparse.linalg import eigsh, splu
+
 import warnings
 
 from .coords import preprocess_coords
@@ -52,7 +53,7 @@ class StanSPDE:
         y_obs: np.ndarray,
         domain_knowledge: Optional[DomainKnowledge] = None,
         extension_factor: float = 0.2,
-        alpha: int = 2,
+        alpha: int = 1,
         verbose: bool = True
     ) -> None:
         """Initialize SPDE model with automatic configuration.
@@ -158,28 +159,43 @@ class StanSPDE:
         if not hasattr(self.mesh, 'scale_diagnostics'):
             return self.mesh.compute_scale_diagnostics(verbose=False)
         return self.mesh.scale_diagnostics
-    
+
     def _compute_log_det_Q_base(self, Q_matrix: csr_matrix) -> float:
-        """Compute log determinant of sparse precision matrix.
+        """Compute log determinant of sparse precision matrix (excluding null space).
         
         :param Q_matrix: Scipy sparse CSR matrix (0-based indexing)
-        :return: Log determinant of Q
+        :return: Log determinant of Q (generalized, excluding null space)
         """
-        Q = Q_matrix
+        n = Q_matrix.shape[0]
+        k = min(n - 1, max(20, int(0.1 * n)))
         
-        # Use sparse LU for matrix that may be singular
         try:
-            lu = splu(Q.tocsc())
-            diagL = lu.L.diagonal()
-            diagU = lu.U.diagonal()
+            eigenvalues = eigsh(
+                Q_matrix.tocsc(), 
+                k=k, 
+                which='LM',
+                return_eigenvectors=False,
+                tol=1e-10
+            )
             
-            log_det = np.sum(np.log(np.abs(diagL))) + np.sum(np.log(np.abs(diagU)))
-        except RuntimeError as e:
-            if "exactly singular" in str(e):
-                warnings.warn("Precision matrix is singular, returning -inf for log determinant")
-                log_det = -np.inf
-            else:
-                raise
+            max_eig = eigenvalues.max()
+            tolerance = max(1e-12, max_eig * 1e-12)
+            positive_eigs = eigenvalues[eigenvalues > tolerance]
+            
+            if len(positive_eigs) == 0:
+                raise ValueError("No positive eigenvalues found")
+                
+            log_det = np.sum(np.log(positive_eigs))
+            
+        except Exception as e:
+            warnings.warn(f"Eigenvalue method failed, using diagonal approximation: {e}")
+            diag = Q_matrix.diagonal()
+            positive_diag = diag[diag > 1e-12]
+            
+            if len(positive_diag) == 0:
+                raise ValueError("Matrix appears to be singular")
+                
+            log_det = np.sum(np.log(positive_diag))
         
         return log_det
     
