@@ -8,11 +8,12 @@ functions {
     return -0.5 * (quadratic_form - log_det_Q);
   }
 }
-
 data {
   int<lower=1> N_obs;                 // number of observations
+  vector[N_obs] y;                    // observed values
+
   int<lower=1> N_mesh;                // number of mesh vertices
-  
+
   // Sparse matrix A (projector) in CSR format
   int<lower=0> A_nnz;                 // number of non-zeros in A
   vector[A_nnz] A_w;                  // values
@@ -24,13 +25,8 @@ data {
   vector[Q_nnz] Q_w;                  // values (for kappa=1, tau=1)
   array[Q_nnz] int Q_v;               // column indices (1-indexed)
   array[N_mesh + 1] int Q_u;          // row pointers (1-indexed)
-  
   real log_det_Q_base;                // log determinant for base Q (kappa=1, tau=1)
-  
-  // Observations
-  vector[N_obs] y;                    // observed values
 }
-
 parameters {
   vector[N_mesh] u_field;              // spatial field at mesh vertices
   real<lower=0> sigma;                 // observation noise SD
@@ -41,20 +37,19 @@ transformed parameters {
   vector[N_obs] spatial_effect = csr_matrix_times_vector(N_obs, N_mesh, A_w, A_v, A_u, u_field);
 }
 model {
-  // Scale precision matrix Q by kappa^2 and tau
   vector[Q_nnz] Q_w_scaled = Q_w * square(kappa) * tau;
   real log_det_Q = log_det_Q_base + 2 * N_mesh * log(kappa) + N_mesh * log(tau);
   
-  // GMRF prior on mesh vertices
   target += sparse_gmrf_lpdf(u_field | Q_u, Q_v, Q_w_scaled, log_det_Q);
-  
-  // Likelihood
-  y ~ normal(spatial_effect, sigma);
-  
-  // Priors
-  tau ~ gamma(1, 0.00005);
-  kappa ~ gamma(4,1);
-  sigma ~ exponential(1);
 
+  y ~ normal(spatial_effect, sigma);
+
+  kappa ~ normal(0.0001, 0.005);   // wtf?
+  tau ~ normal(1, 0.5)             // wtf?
+  sigma ~ exponential(1);        // Flexible observation noise
 }
 
+generated quantities {
+  real range = 2 / kappa;      // Spatial range in original units
+  real sigma_spatial = 1 / sqrt(tau);   // Spatial standard deviation
+}
