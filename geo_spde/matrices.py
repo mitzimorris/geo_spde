@@ -108,6 +108,11 @@ def compute_matern_precision_nu_three_halves(
     The discretized precision matrix is:
         Q = (kappa^2 * C + G) * C^(-1) * (kappa^2 * C + G)
     
+    For sparse computation, we use a different but equivalent formulation that preserves sparsity.
+    The key insight is that for FEM discretizations on triangular meshes, we can approximate
+    this as Q ≈ B * C_diag^(-1) * B where C_diag is the diagonal of C (lumped mass matrix).
+    This maintains the correct sparsity pattern while providing a good approximation.
+    
     :param C: Mass matrix from FEM discretization
     :param G: Stiffness matrix from FEM discretization
     :param kappa: SPDE range parameter (kappa = sqrt(3)/rho where rho is correlation range)
@@ -115,43 +120,25 @@ def compute_matern_precision_nu_three_halves(
     """
     B = kappa**2 * C + G
     
-    # Compute B * C^(-1) * B by solving C * X = B to maintain sparsity
-    # Use column-by-column solving to preserve symmetry and numerical stability
+    # Use lumped mass matrix approximation to maintain sparsity
+    # This is a standard technique in FEM for maintaining sparsity in higher-order operators
+    # The lumped mass matrix uses row sums to create a diagonal approximation
+    C_lumped_diag = np.array(C.sum(axis=1)).flatten()
     
-    from scipy.sparse.linalg import spsolve
+    # Ensure no zero entries on diagonal (numerical safety)
+    C_lumped_diag = np.maximum(C_lumped_diag, 1e-12)
     
-    # Solve C * X = B column by column to maintain sparsity and symmetry
-    n = B.shape[0]
-    Q_data = []
-    Q_row_idx = []
-    Q_col_idx = []
+    # Create inverse of lumped mass matrix as a diagonal matrix
+    C_lumped_inv = sparse.diags(1.0 / C_lumped_diag)
     
-    # Convert B to CSC format for efficient column access
-    B_csc = B.tocsc()
-    
-    for j in range(n):
-        # Solve C * x_j = B[:, j] 
-        x_j = spsolve(C, B_csc[:, j])
-        
-        # Compute Q[:, j] = B * x_j, but only store non-zeros
-        q_j = B @ x_j
-        
-        # Find non-zero entries
-        nonzero_mask = np.abs(q_j) > 1e-15
-        nonzero_indices = np.where(nonzero_mask)[0]
-        
-        # Add to sparse format data
-        Q_data.extend(q_j[nonzero_indices])
-        Q_row_idx.extend(nonzero_indices)
-        Q_col_idx.extend([j] * len(nonzero_indices))
-    
-    # Create sparse matrix and ensure symmetry
-    Q = sparse.csr_matrix((Q_data, (Q_row_idx, Q_col_idx)), shape=(n, n))
+    # Compute Q = B * C_lumped_inv * B
+    # This maintains sparsity because C_lumped_inv is diagonal
+    Q = B @ C_lumped_inv @ B
     
     # Force exact symmetry: Q = (Q + Q^T) / 2
     Q = 0.5 * (Q + Q.T)
     
-    return Q
+    return Q.tocsr()
 
 
 def _compute_mass_matrix_vectorized(vertices: np.ndarray, triangles: np.ndarray) -> sparse.csr_matrix:
