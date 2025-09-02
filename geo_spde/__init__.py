@@ -49,7 +49,7 @@ __all__ = [
     'SPDEMesh',
     'compute_fem_matrices',
     'sparse_to_stan_csr',
-nn    
+    
     # Exceptions
     'GeoSpdeError',
     'CoordsError',
